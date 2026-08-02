@@ -918,6 +918,8 @@ struct Arguments {
     var tajweedRemoveWholeWord = false
     /// Expected phoneme sequence to force-align, words separated by spaces.
     var forcedAlignPhonemes: String?
+    /// Measure the letter-level analyzer, clean and with a ghunnah removed.
+    var alignedTajweed = false
     var forcedAlignVerse = VerseReference(surah: 112, ayah: 1)
     var phonemeVocabularyPath = NSString(string:
         "~/.cache/huggingface/hub/models--obadx--muaalem-model-v3_2/snapshots/01a1ef9fbe40d144ef845101e89ff924aed3fef5/vocab.json"
@@ -971,6 +973,7 @@ struct Arguments {
             case "--dump-tajweed-output": dumpTajweedOutput = true
             case "--tajweed-negatives": tajweedNegatives = true
             case "--remove-whole-word": tajweedRemoveWholeWord = true
+            case "--aligned-tajweed": alignedTajweed = true
             case "--phonemes": forcedAlignPhonemes = next()
             case "--phoneme-vocab": phonemeVocabularyPath = next() ?? phonemeVocabularyPath
             case "--verse":

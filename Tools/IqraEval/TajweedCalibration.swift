@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.alignedTajweed {
+            try await measureAligned(arguments, reciter: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.dumpTajweedOutput {
             let library2 = ReciterAudioLibrary()
             let url = try await library2.fetch(VerseReference(surah: 36, ayah: 1), reciter: reciter)
@@ -376,6 +381,124 @@ enum TajweedCalibration {
             best = max(best, sample.expectsPresence ? frame[presentIndex] : frame[absentIndex])
         }
         return best
+    }
+
+    // MARK: - Letter-level tajweed
+
+    /// Does judging the phoneme instead of the word actually see a missing ghunnah?
+    ///
+    /// The word-level checker caught 13% of ghunnahs whose audio had been removed, while
+    /// catching 86% of whole words removed — it was reading word identity. This runs the
+    /// same experiment against `AlignedTajweedAnalyzer`, and can aim the removal far more
+    /// precisely, because forced alignment says exactly which frames are the nūn.
+    static func measureAligned(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin — run scripts/export-phonemes.py")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let analyzer = AlignedTajweedAnalyzer(model: model, script: script)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+
+        print("Letter-level tajweed")
+        print("  phoneme script  \(script.count) āyāt")
+        print("  reciter         \(reciter.name) — assumed correct throughout")
+        print("")
+
+        var ayatTested = 0
+        var falseFlags = 0
+        var examinedClean = 0
+        var attempted = 0
+        var caught = 0
+
+        for surah in arguments.surahs {
+            let surahTarget = try await store.target(surah: surah)
+            for verse in surahTarget.verses.prefix(arguments.limitPerSurah) {
+                let target = RecitationTarget(verse: verse)
+                guard let entry = script[verse.reference],
+                      entry.ghonna.contains(1),
+                      let url = try? await library.fetch(verse.reference, reciter: reciter),
+                      let audio = try? AudioFileLoader.load(url: url)
+                else { continue }
+
+                // The whole āyah as one segment, every word present. Word timings are not
+                // used for the judgement — forced alignment supplies those — they only
+                // say which words the audio holds.
+                func segment(_ chunk: AudioChunk) -> AlignedAudioSegment {
+                    AlignedAudioSegment(
+                        audio: chunk,
+                        transcription: .empty,
+                        words: target.flattenedWords.map {
+                            WordEvaluation(
+                                targetIndex: $0.globalIndex,
+                                reference: $0.reference,
+                                expectedText: $0.text,
+                                status: .correct,
+                                timeRange: 0...chunk.duration,
+                                recognizerConfidence: 1
+                            )
+                        }
+                    )
+                }
+
+                ayatTested += 1
+                let clean = await analyzer.analyze(segments: [segment(audio)], target: target)
+                falseFlags += clean.count
+                examinedClean += await analyzer.coverage().examined
+
+                // Locate a ghunnah phoneme precisely, and take its sound away.
+                guard let observed = try? await model.probabilities(for: audio),
+                      let phonemes = observed.probabilities["phonemes"],
+                      let spans = try? aligner.align(
+                          probabilities: phonemes,
+                          target: entry.symbols.map(Int.init)
+                      )
+                else { continue }
+
+                guard let nasal = spans.first(where: { span in
+                    span.index < entry.ghonna.count && entry.ghonna[span.index] == 1
+                        && span.confidence > 0.5 && span.frames.count >= 2
+                }) else { continue }
+
+                let start = observed.startTime + Double(nasal.frames.lowerBound) * observed.frameDuration
+                let end = observed.startTime + Double(nasal.frames.upperBound) * observed.frameDuration
+                guard let donorSpan = spans.first(where: { span in
+                    span.index < entry.ghonna.count && entry.ghonna[span.index] == 2
+                        && span.frames.count >= nasal.frames.count
+                }) else { continue }
+                let donor = observed.startTime
+                    + Double(donorSpan.frames.lowerBound) * observed.frameDuration
+                    + (end - start) / 2
+
+                guard let broken = corrupt(
+                    audio,
+                    around: (start + end) / 2,
+                    donorTime: donor,
+                    span: end - start
+                ) else { continue }
+
+                attempted += 1
+                let after = await analyzer.analyze(segments: [segment(broken)], target: target)
+                if after.count > clean.count { caught += 1 }
+            }
+        }
+
+        print("  āyāt tested          \(ayatTested)")
+        print("  examined             \(examinedClean) phonemes carrying a rule")
+        print("  FALSE FLAGS          \(falseFlags) on correct recitation")
+        print("")
+        print("── with one ghunnah removed ".padding(toLength: 72, withPad: "─", startingAt: 0))
+        print("  attempted            \(attempted)")
+        print("  CAUGHT               \(caught)/\(attempted)  "
+              + "(\(pct(Double(caught) / Double(max(attempted, 1)))))")
+        print("")
+        print("  The word-level checker caught 13% of the same removal. Read this beside")
+        print("  the false-flag count above: catching more by saying more is not progress.")
     }
 
     // MARK: - Forced alignment

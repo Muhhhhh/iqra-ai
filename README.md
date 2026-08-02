@@ -478,6 +478,44 @@ correct recitation. It means the useful signal is at word granularity, and that 
 individual ṣifāt needs alignment at the level of the letter rather than the word — which
 is the phoneme head, and unbuilt.
 
+### Letter-level judgement, and why it did not help
+
+If the checker responds to the word rather than the ṣifah, the obvious fix is to stop
+asking about words. `CTCForcedAligner` aligns the known phoneme sequence to the audio —
+constrained Viterbi over the model's own phoneme head, restricted to the sequence the
+reciter is supposed to be saying — and it works very well: 20/20 phonemes on 112:1, all
+above 99% confidence, word boundaries with the silences in the right places, from audio
+the word matcher gets half wrong. `scripts/export-phonemes.py` supplies the sequences and
+their expected ṣifāt for all 6,236 āyāt, 652,401 phonemes, from the same phonetiser the
+model was trained against.
+
+`AlignedTajweedAnalyzer` then reads the ṣifah heads over one phoneme's frames instead of
+a whole word's. Measured the same way — one ghunnah's audio replaced, this time located
+exactly by the alignment rather than guessed at:
+
+| checker | caught | false flags |
+|---|---|---|
+| word-level | 13% | — |
+| **letter-level** | **2.7%** | 67 on 850 phonemes examined |
+
+Worse, not better. Aiming precisely at the nūn and reading only its frames does not
+recover a missing ghunnah, which leaves one explanation: **the ṣifah heads are not
+reporting what was heard at those frames.** They predict what the ṣifah *should* be given
+the phonetic content around them — close to reading it off the text. That is a reasonable
+thing for a model trained to transcribe ṣifāt sequences to do, and it makes it unsuitable
+for verifying whether a reciter actually produced one, at any granularity.
+
+So audio tajweed verification through this model is not a tuning problem. It stays off by
+default, and the honest summary is that it can tell you a word went unrecited — which the
+word matcher already does.
+
+**What survives, and is worth building on:** the alignment itself. It gives per-phoneme
+timings at 99% confidence without depending on transcription at all. Madd is a question of
+*duration*, not of ṣifah — and the phonetiser encodes madd length directly, as repeated
+vowel symbols (`مُۥۥسَاا`). Comparing the aligned duration of that run against the
+reciter's own pace needs none of the ṣifah heads, and is the one tajweed rule this
+architecture can currently support honestly.
+
 **Chasing that tail found a tajweed bug.** The rules with no spike were idghām and iqlāb.
 Idghām was one rule covering all six of ي ر م ل و ن — but **idghām into ل and ر is *bilā
 ghunnah*: it carries no nasalisation at all**. The model was correctly reporting no nasal
