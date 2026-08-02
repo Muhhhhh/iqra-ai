@@ -142,6 +142,34 @@ struct TokenAlignerTests {
 
     // MARK: - Conservatism
 
+    @Test("A stray match far from everything else is not believed")
+    func isolatedDistantMatchIsDiscarded() {
+        // Recitation is continuous, so matches arrive in runs. One or two words matched
+        // forty words away from the rest is a noisy transcript finding something
+        // familiar-looking elsewhere on the page — and on screen it lights up an āyah the
+        // reciter never touched, which is a false claim about their recitation.
+        var words: [Verse] = []
+        for ayah in 1...12 {
+            words.append(Verse(
+                reference: VerseReference(surah: 2, ayah: ayah),
+                text: "كلمة\(ayah) لفظة\(ayah) عبارة\(ayah) جملة\(ayah) نصية\(ayah)"
+            ))
+        }
+        let expected = RecitationTarget(verses: words)
+        // Recites āyah 1 properly, and one word of āyah 10 surfaces from nowhere.
+        let result = aligner.align(
+            heard: heard("كلمة1 لفظة1 عبارة1 جملة1 نصية1 عبارة10"),
+            against: expected,
+            isFinal: true
+        )
+
+        let farMatches = result.words.filter {
+            $0.reference.ayah == 10 && ($0.status == .correct || $0.status == .uncertain(heard: "عبارة10"))
+        }
+        #expect(farMatches.isEmpty, "a lone match ten āyāt away was believed")
+        #expect(result.words.prefix(5).allSatisfy { $0.status == .correct })
+    }
+
     @Test("A near-miss is advisory, never an outright mistake")
     func nearMissIsUncertainNotWrong() {
         // One-character difference: much more likely an ASR artefact than a misrecitation.

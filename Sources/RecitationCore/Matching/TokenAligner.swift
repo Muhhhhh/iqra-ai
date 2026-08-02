@@ -28,6 +28,26 @@ public struct MatchingOptions: Sendable, Equatable {
     /// words into the Quran. Anything that also occurs this close by is treated as a
     /// repetition instead.
     public var repetitionWindow: Int
+    /// How near another matched word a match must be to count as corroborated.
+    ///
+    /// Recitation is continuous, so matches arrive in runs. A single word matched with
+    /// nothing near it is not someone reciting there — it is a noisy transcript finding
+    /// one familiar-looking word somewhere else on the page. Measured over 21 muṣḥaf
+    /// pages recited from the middle, isolated matches landed as far as 53 words past
+    /// the end of what was recited and 42 words above its start, which on screen is the
+    /// highlighting jumping to a completely different āyah.
+    ///
+    /// Set to 0 to accept isolated matches.
+    public var corroborationWindow: Int
+    /// How many matches a run detached from the main body needs before it is believed.
+    ///
+    /// Two is measurably the worst of both: the stray pair survives and detection falls
+    /// anyway. The cost of corroborating at all is that a wrong āyah is caught 5 times
+    /// in 9 rather than 7 — some of the evidence for "you recited the wrong passage" is
+    /// exactly the scattered matches this discards. Taken deliberately: highlighting that
+    /// lands on an āyah the reciter never touched is itself a false claim about their
+    /// recitation, and this project ranks that above a missed detection.
+    public var minimumMatchRun: Int
 
     public init(
         matchThreshold: Double = 0.82,
@@ -36,8 +56,12 @@ public struct MatchingOptions: Sendable, Equatable {
         deletionCost: Double = 1.0,
         insertionCost: Double = 1.0,
         gapOpenCost: Double = 0.5,
-        repetitionWindow: Int = 8
+        repetitionWindow: Int = 8,
+        corroborationWindow: Int = 6,
+        minimumMatchRun: Int = 3
     ) {
+        self.corroborationWindow = corroborationWindow
+        self.minimumMatchRun = minimumMatchRun
         self.matchThreshold = matchThreshold
         self.uncertainThreshold = uncertainThreshold
         self.confidenceFloor = confidenceFloor
@@ -331,6 +355,57 @@ public struct TokenAligner: Sendable {
                 // no preceding word to anchor to, and the place to look for it is where
                 // the reciter began — which is not known until a match has been seen.
                 pendingInsertions.append((heardIndex, lastTargetIndex))
+            }
+        }
+
+        // Drop matches with nothing near them: one word matched forty words from any
+        // other is the transcript wandering, not the reciter. Dropped to
+        // `notYetRecited` rather than to a mistake — there is no evidence either way,
+        // and inventing a verdict is the one thing that must not happen here.
+        if options.corroborationWindow > 0 {
+            let matched = statuses.indices.filter { index in
+                switch statuses[index] {
+                case .correct, .uncertain: return true
+                default: return false
+                }
+            }
+            if matched.count > 1 {
+                let window = options.corroborationWindow
+                // Group matches into runs. Testing each match against its nearest
+                // neighbour is not enough: two spurious matches beside each other
+                // corroborate one another, and a stray *pair* forty words away lights up
+                // a distant āyah exactly as a stray single does.
+                var clusters: [[Int]] = []
+                for index in matched {
+                    if var last = clusters.last, let previous = last.last, index - previous <= window {
+                        last.append(index)
+                        clusters[clusters.count - 1] = last
+                    } else {
+                        clusters.append([index])
+                    }
+                }
+
+                // The reciter is wherever the bulk of the evidence is.
+                if let main = clusters.max(by: { $0.count < $1.count }), main.count >= 2 {
+                    for cluster in clusters where cluster.count < options.minimumMatchRun {
+                        let distance = min(
+                            abs((cluster.first ?? 0) - (main.last ?? 0)),
+                            abs((main.first ?? 0) - (cluster.last ?? 0))
+                        )
+                        guard distance > window else { continue }
+                        for index in cluster {
+                            statuses[index] = nil
+                            ranges[index] = nil
+                            confidences[index] = nil
+                        }
+                    }
+                    furthestMatched = statuses.indices.last { index in
+                        switch statuses[index] {
+                        case .correct, .uncertain: return true
+                        default: return false
+                        }
+                    } ?? -1
+                }
             }
         }
 

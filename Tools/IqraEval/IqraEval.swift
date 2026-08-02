@@ -103,6 +103,7 @@ struct IqraEval {
                 maximumSegment: maximumSegment,
                 beamSize: arguments.beamSize,
                 nBest: arguments.nBest,
+                gapCost: arguments.gapCost,
                 verbose: arguments.verbose
             )
             report.printSummary()
@@ -127,6 +128,14 @@ struct IqraEval {
         /// An āyah recited twice, as when going back to correct yourself. Legitimate:
         /// it must be read as a repetition, never as words added to the Quran.
         case repeatedAyah = "repeat"
+        /// A whole muṣḥaf page as the target, with only its opening āyāt recited.
+        ///
+        /// This is the shape the app actually runs in, and the three-āyah passages above
+        /// cannot reproduce what goes wrong in it: on a page of sixty-odd words there is
+        /// somewhere distant for a noisy transcript to match, and when it does, the
+        /// highlighting lands far from where the reciter is. What this case measures is
+        /// how far past the last word actually recited the matcher claims to have heard.
+        case partialPage = "page"
     }
 
     struct Case {
@@ -142,6 +151,12 @@ struct IqraEval {
         let corrupted: VerseReference?
         /// Ground-truth text of what is actually audible, for word error rate.
         let spokenText: String
+        /// Index one past the last word genuinely recited. Anything matched beyond this
+        /// is the matcher landing somewhere the reciter never was.
+        var recitedWordCount: Int?
+        /// Index of the first word genuinely recited. Anything matched before it is the
+        /// same failure in the other direction.
+        var recitedWordStart: Int = 0
     }
 
     /// Three consecutive āyāt per case: enough for a skip to have text on both sides of
@@ -161,7 +176,47 @@ struct IqraEval {
             through: VerseReference(surah: 109, ayah: 1)
         ).first
 
-        for surah in surahs {
+        if kinds.contains(.partialPage) {
+            // Pages drawn from the same surahs, so the material is comparable.
+            var pages: [Int] = []
+            for surah in surahs {
+                if let first = try? await store.firstPage(ofSurah: surah) {
+                    pages.append(contentsOf: (0..<limitPerSurah).map { first + $0 })
+                }
+            }
+            for number in pages where number >= 1 && number <= MushafPage.count {
+                guard let pageTarget = try? await store.target(page: number),
+                      pageTarget.verses.count >= 3 else { continue }
+                // Two āyāt from the middle of the page, which is how a page is usually
+                // practised — and which leaves text on both sides for a noisy transcript
+                // to land in, forwards or backwards.
+                let start = max(0, pageTarget.verses.count / 2 - 1)
+                let recited = Array(pageTarget.verses[start..<min(start + 2, pageTarget.verses.count)])
+                var chunks: [AudioChunk] = []
+                var ok = true
+                for verse in recited {
+                    guard let url = try? await library.fetch(verse.reference, reciter: reciter),
+                          let audio = try? AudioFileLoader.load(url: url) else { ok = false; break }
+                    chunks.append(audio)
+                }
+                guard ok, !chunks.isEmpty else { continue }
+                let precedingWords = pageTarget.verses[..<start].reduce(0) { $0 + $1.words.count }
+                let recitedWords = recited.reduce(0) { $0 + $1.words.count }
+                cases.append(Case(
+                    kind: .partialPage,
+                    label: "page \(number), first \(recited.count) āyāt of \(pageTarget.verses.count)",
+                    target: pageTarget,
+                    audio: splice(chunks),
+                    omitted: nil,
+                    corrupted: nil,
+                    spokenText: recited.map(\.text).joined(separator: " "),
+                    recitedWordCount: precedingWords + recitedWords,
+                    recitedWordStart: precedingWords
+                ))
+            }
+        }
+
+        for surah in surahs where kinds.contains(where: { $0 != .partialPage }) {
             let target = try await store.target(surah: surah)
             let verses = target.verses
             guard verses.count >= 3 else { continue }
@@ -183,7 +238,7 @@ struct IqraEval {
                 let passage = RecitationTarget(verses: triple)
                 let ordered = triple.map { audio[$0.reference]! }
 
-                for kind in kinds {
+                for kind in kinds where kind != .partialPage {
                     switch kind {
                     case .clean:
                         cases.append(Case(
@@ -222,6 +277,9 @@ struct IqraEval {
                             corrupted: triple[1].reference,
                             spokenText: [triple[0].text, intruder.text, triple[2].text].joined(separator: " ")
                         ))
+
+                    case .partialPage:
+                        continue
 
                     case .repeatedAyah:
                         cases.append(Case(
@@ -303,6 +361,7 @@ struct IqraEval {
         maximumSegment: TimeInterval,
         beamSize: Int,
         nBest: Bool,
+        gapCost: Double,
         verbose: Bool
     ) async throws -> Report {
         let heads = AlignmentHeads.inferred(fromFileNamed: modelURL.lastPathComponent)
@@ -332,7 +391,9 @@ struct IqraEval {
                 )
             )
         )
-        let aligner = TokenAligner()
+        // Gap cost against substitution cost is what decides whether the matcher would
+        // rather skip ahead than admit it misheard. See `--gap-cost`.
+        let aligner = TokenAligner(options: .init(deletionCost: gapCost, insertionCost: gapCost))
 
         var report = Report(trailingSilence: trailingSilence)
         let frameSamples = Int(0.1 * AudioChunk.canonicalSampleRate)
@@ -428,6 +489,14 @@ struct IqraEval {
         var repeatCases = 0
         var repeatsMisreadAsAdditions = 0
 
+        var pageCases = 0
+        var pageCasesOvershooting = 0
+        var pageWordsBeyond = 0
+        var pageWordsRecited = 0
+        var pageWorstOvershoot = 0
+        var pageWordsBefore = 0
+        var pageWorstUndershoot = 0
+
         /// Heard words containing U+FFFD — whisper's byte-level BPE splits an Arabic
         /// character across two tokens, and decoding each token separately destroys it.
         /// Such a word can never match anything, so every one is a false flag waiting
@@ -502,6 +571,30 @@ struct IqraEval {
             case .repeatedAyah:
                 repeatCases += 1
                 repeatsMisreadAsAdditions += result.additions.count
+
+            case .partialPage:
+                pageCases += 1
+                guard let recited = testCase.recitedWordCount else { break }
+                // How far past the end of what was recited the matcher claims to have
+                // heard something. On a page of sixty words this is the distance the
+                // highlighting lands from the reciter.
+                let matchedBeyond = result.words.enumerated().filter { index, word in
+                    index >= recited && { if case .uncertain = word.status { return true }; return word.status == .correct }()
+                }
+                pageWordsBeyond += matchedBeyond.count
+                if let furthest = matchedBeyond.map(\.offset).max() {
+                    pageWorstOvershoot = max(pageWorstOvershoot, furthest - recited + 1)
+                    pageCasesOvershooting += 1
+                }
+                pageWordsRecited += recited - testCase.recitedWordStart
+                let before = result.words.enumerated().filter { index, word in
+                    index < testCase.recitedWordStart
+                        && { if case .uncertain = word.status { return true }; return word.status == .correct }()
+                }
+                pageWordsBefore += before.count
+                if let earliest = before.map(\.offset).min() {
+                    pageWorstUndershoot = max(pageWorstUndershoot, testCase.recitedWordStart - earliest)
+                }
             }
 
             if verbose {
@@ -554,6 +647,12 @@ struct IqraEval {
             if wrongCases > 0 {
                 out("  wrong āyah caught    \(wrongCaught)/\(wrongCases)  (\(format(100 * Double(wrongCaught) / Double(wrongCases), 0))%), "
                     + "\(wrongCollateral) words flagged outside it")
+            }
+            if pageCases > 0 {
+                out("  PAGE OVERSHOOT       \(pageCasesOvershooting)/\(pageCases) pages matched words past what was recited")
+                out("    words beyond       \(pageWordsBeyond) (of \(pageWordsRecited) actually recited), "
+                    + "furthest \(pageWorstOvershoot) words past the end")
+                out("    words before       \(pageWordsBefore), furthest \(pageWorstUndershoot) words above the start")
             }
             if repeatCases > 0 {
                 out("  repeated āyah        \(repeatsMisreadAsAdditions) misread as added words across \(repeatCases) cases")
@@ -714,6 +813,12 @@ struct Arguments {
     var limitPerSurah: Int = 2
     /// Decode each segment several ways and let the expected text choose between them.
     var nBest = false
+    /// Cost of skipping an expected word or adding a heard one.
+    ///
+    /// At 1.0 it equals the most a substitution can cost, so "skip thirty words" and
+    /// "match thirty words wrongly" price the same and noise chooses between them —
+    /// which is how the highlighting ends up far from where someone is reciting.
+    var gapCost = MatchingOptions.default.deletionCost
     /// Measure what the tajweed model says on recitation known to be correct.
     var calibrateTajweed = false
     /// Explicit tajweed weights, for comparing conversions.
@@ -758,6 +863,7 @@ struct Arguments {
             case "--beam": beamSize = next().flatMap { Int($0) } ?? beamSize
             case "--limit": limitPerSurah = next().flatMap { Int($0) } ?? limitPerSurah
             case "--nbest": nBest = true
+            case "--gap-cost": gapCost = next().flatMap { Double($0) } ?? gapCost
             case "--calibrate-tajweed": calibrateTajweed = true
             case "--tajweed-model-path": tajweedModelPath = next()
             case "--dump-tajweed-output": dumpTajweedOutput = true
