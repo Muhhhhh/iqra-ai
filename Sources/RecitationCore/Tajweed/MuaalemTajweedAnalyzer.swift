@@ -21,10 +21,30 @@ import Foundation
 public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
 
     public struct Options: Sendable {
-        /// Mean probability of the expected attribute below which the rule is questioned.
+        /// Peak probability of the expected attribute below which the rule is questioned.
+        ///
+        /// **Peak, not mean.** The model is a CTC network: it labels almost every frame
+        /// blank and spikes where it has something to say. A ghunnah is one spike on one
+        /// nūn inside a word that may run six letters, and the other letters carry the
+        /// contrary label perfectly correctly. Averaging across the word therefore
+        /// measures how much of the word is *not* a ghunnah — which is most of it, in
+        /// every recitation, correct or not.
+        ///
+        /// Measured through `IqraEval --calibrate-tajweed` over 216 rule occurrences in
+        /// Al-Husary's murattal, all of them correct by assumption:
+        ///
+        ///     rule        mean over word (med)   peak in word (p5 / p25 / med)
+        ///     ghunnah     20.0%                  0.0% /  97.2% / 100.0%
+        ///     ikhfāʾ      25.0%                  1.8% /  99.8% / 100.0%
+        ///     qalqalah    14.3%                  0.0% /  94.1% /  99.9%
+        ///     idghām      14.3%                  0.0% /   0.0% /  94.9%
+        ///     iqlāb       14.3%                  0.0% /   0.3% / 100.0%
+        ///
+        /// The mean-based test that shipped before would have questioned **145 of 216**
+        /// correct occurrences — 67% of expert recitation. The peak separates instead.
         public var presenceThreshold: Double
-        /// The model must be at least this sure of the contrary reading before anything
-        /// is said. Between the two thresholds it stays silent.
+        /// The model must spike on the contrary reading this hard before anything is said.
+        /// Between the two thresholds it stays silent.
         public var contraryThreshold: Double
         /// Frames of evidence needed. One frame is 40 ms; a ghunnah is two harakāt, so a
         /// genuine one spans several.
@@ -33,8 +53,11 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         public var windowSeconds: Double
 
         public init(
-            presenceThreshold: Double = 0.35,
-            contraryThreshold: Double = 0.65,
+            // At the 5th percentile of correct recitation: questioning a rule this way
+            // is wrong about one time in twenty on a qārī, before any real mistake is
+            // considered. That is the cost being accepted, stated in a number.
+            presenceThreshold: Double = 0.02,
+            contraryThreshold: Double = 0.90,
             minimumFrames: Int = 3,
             windowSeconds: Double = 10
         ) {
@@ -49,13 +72,13 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
 
     /// The heads this analyzer reads, and the class index that means "the attribute is
     /// present". Taken from the model's own vocab.json.
-    enum Head: String {
+    public enum Head: String, Sendable, CaseIterable {
         case ghonna
         case qalqla
         case tafkheemOrTaqeeq = "tafkheem_or_taqeeq"
 
         /// Class index meaning the attribute was heard.
-        var presentIndex: Int {
+        public var presentIndex: Int {
             switch self {
             case .ghonna: return 1        // مغن
             case .qalqla: return 1        // مقلقل
@@ -64,7 +87,7 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         }
 
         /// Class index meaning it was heard and the attribute was absent.
-        var absentIndex: Int {
+        public var absentIndex: Int {
             switch self {
             case .ghonna: return 2        // لا غنة
             case .qalqla: return 2        // لا قلقلة
@@ -133,6 +156,37 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
 
     // MARK: - Inference
 
+    /// One-shot diagnostic of how a head's output actually arrives: element type,
+    /// layout, and the same values read three ways. Used to settle what `softmaxRows`
+    /// must do, rather than assuming.
+    public func describeOutput(for audio: AudioChunk, head: String = "ghonna") throws -> String {
+        if model == nil { try loadModel() }
+        guard let model else { throw TajweedModelError.notLoaded }
+        var extracted = features.features(from: audio)
+        guard !extracted.isEmpty else { throw TajweedModelError.audioTooShort }
+        let rows = self.rows
+        if extracted.count < rows {
+            extracted += Array(repeating: [Float](repeating: 0, count: 160), count: rows - extracted.count)
+        }
+        let input = try MLMultiArray(shape: [1, NSNumber(value: rows), 160], dataType: .float32)
+        let pointer = input.dataPointer.bindMemory(to: Float.self, capacity: rows * 160)
+        for row in 0..<rows {
+            for column in 0..<160 { pointer[row * 160 + column] = extracted[row][column] }
+        }
+        let output = try model.prediction(from: MLDictionaryFeatureProvider(dictionary: ["input_features": input]))
+        guard let array = output.featureValue(for: head)?.multiArrayValue else { return "no head \(head)" }
+
+        var text = "head \(head): shape \(array.shape), strides \(array.strides), "
+        text += "dataType raw \(array.dataType.rawValue), count \(array.count)\n"
+        let viaNumber = (0..<min(9, array.count)).map { array[$0].doubleValue }
+        text += "  via NSNumber:  \(viaNumber.map { ($0 * 1000).rounded() / 1000 })\n"
+        let asFloat = array.dataPointer.bindMemory(to: Float.self, capacity: array.count)
+        text += "  as Float32:    \((0..<9).map { (Double(asFloat[$0]) * 1000).rounded() / 1000 })\n"
+        let asHalf = array.dataPointer.bindMemory(to: Float16.self, capacity: array.count)
+        text += "  as Float16:    \((0..<9).map { (Double(asHalf[$0]) * 1000).rounded() / 1000 })"
+        return text
+    }
+
     /// Per-frame probability of each head's classes, on the session clock.
     public struct Observation: Sendable {
         /// `[head][frame][class]`.
@@ -143,6 +197,10 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
     }
 
     public func probabilities(for audio: AudioChunk) throws -> Observation {
+        // Load on first use rather than requiring the caller to remember: a public entry
+        // point that silently throws `notLoaded` reads, from the outside, exactly like a
+        // model that has no opinion about the audio.
+        if model == nil { try loadModel() }
         guard let model else { throw TajweedModelError.notLoaded }
         let rows = self.rows
         var extracted = features.features(from: audio)
@@ -193,6 +251,18 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
     }
 
     /// Convert logits `[1, frames, classes]` to per-frame probabilities.
+    ///
+    /// The element type is read from the array rather than assumed. The converted model
+    /// emits **float16**, and reading those bytes as `Float` produces numbers that are not
+    /// merely inaccurate but unrelated — every second logit is assembled from halves of
+    /// two different values. Softmax then flattens the nonsense into a near-uniform
+    /// distribution, and a uniform distribution is indistinguishable, from the outside,
+    /// from a model that has no opinion: the analyzer stayed silent about every rule in
+    /// every recitation, which reads as "tajweed checking finds nothing wrong".
+    ///
+    /// Measured through `IqraEval --calibrate-tajweed`: reading as `Float` gave every head
+    /// 34.3% for both a rule and its contrary across 251 occurrences. The same model in
+    /// Python, on the same features, puts 0.90–0.95 on its chosen class.
     private func softmaxRows(_ array: MLMultiArray, limit: Int) -> [[Double]] {
         let shape = array.shape.map(\.intValue)
         guard shape.count == 3 else { return [] }
@@ -200,13 +270,44 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         let classes = shape[2]
         guard frames > 0, classes > 0 else { return [] }
 
-        let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: shape[1] * classes)
+        // Strides rather than assumed contiguity, and they are not a formality here: the
+        // real layout is [8000, 32, 1] for a [1, 250, 3] output, because each frame's
+        // three logits are padded out to 32 elements for the Neural Engine. Reading this
+        // buffer as though it were packed gives frame 0 and then nothing.
+        //
+        // The bound must come from the strides too. `array.count` is the *logical* number
+        // of elements (750), while the buffer holds 8000 — using the logical count as the
+        // limit silently truncates everything past frame 23, and softmax of the zeros that
+        // follow is a flat third across every class.
+        let strides = array.strides.map(\.intValue)
+        let frameStride = strides.count == 3 ? strides[1] : classes
+        let classStride = strides.count == 3 ? strides[2] : 1
+        let count = strides.count == 3 ? max(array.count, shape[0] * strides[0]) : array.count
+
+        let read: (Int) -> Double
+        switch array.dataType {
+        case .float16:
+            let pointer = array.dataPointer.bindMemory(to: Float16.self, capacity: count)
+            read = { Double(pointer[$0]) }
+        case .double:
+            let pointer = array.dataPointer.bindMemory(to: Double.self, capacity: count)
+            read = { pointer[$0] }
+        case .int32:
+            let pointer = array.dataPointer.bindMemory(to: Int32.self, capacity: count)
+            read = { Double(pointer[$0]) }
+        default:
+            let pointer = array.dataPointer.bindMemory(to: Float.self, capacity: count)
+            read = { Double(pointer[$0]) }
+        }
+
         var result: [[Double]] = []
         result.reserveCapacity(frames)
         for frame in 0..<frames {
             var logits = [Double](repeating: 0, count: classes)
             for index in 0..<classes {
-                logits[index] = Double(pointer[frame * classes + index])
+                let offset = frame * frameStride + index * classStride
+                guard offset < count else { continue }
+                logits[index] = read(offset)
             }
             let peak = logits.max() ?? 0
             var sum = 0.0
@@ -222,12 +323,19 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
 
     // MARK: - Verification
 
+    /// Rules whose model output on correct recitation separates well enough to judge.
+    ///
+    /// Deliberately a short list. See `Options.presenceThreshold` for the measurements:
+    /// idghām and iqlāb produce no spike in a quarter of occurrences that a qārī recited
+    /// correctly, which is a property of the model, not of the recitation.
+    public static let audioVerifiable: Set<TajweedRule> = [.ghunnah, .ikhfa, .qalqalah, .izhar]
+
     /// Which head decides a rule, and whether the attribute should be present.
     ///
     /// The nūn-sākinah rules are all judged by nasalisation: ikhfāʾ, iqlāb and idghām
     /// with ghunnah should show it, and iẓhār — which exists precisely to *not* — should
     /// not. That inversion is what lets one head check four rules.
-    static func expectation(for rule: TajweedRule) -> (head: Head, present: Bool)? {
+    public static func expectation(for rule: TajweedRule) -> (head: Head, present: Bool)? {
         switch rule {
         case .ghunnah, .ikhfa, .iqlab: return (.ghonna, true)
         case .idgham: return (.ghonna, true)
@@ -261,27 +369,33 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
             let upper = min(series.count, last)
             guard upper - lower >= options.minimumFrames else { continue }
 
+            // Only the rules whose distribution on correct recitation actually separates.
+            // Idghām and iqlāb show no spike at all in a quarter of correct occurrences,
+            // so any threshold that questions their absence would question a qārī every
+            // fourth time. They are detected in the text and coloured on the page; they
+            // are simply not judged against audio until that tail is understood.
+            guard Self.audioVerifiable.contains(occurrence.rule) else { continue }
+
             let frames = series[lower..<upper]
             let presentIndex = expectation.head.presentIndex
             let absentIndex = expectation.head.absentIndex
 
-            // Average over the word, ignoring frames the model marked as padding — those
-            // carry no opinion either way.
-            var presence: [Double] = []
-            var contrary: [Double] = []
+            // The strongest single frame each way, ignoring frames the model marked as
+            // padding. CTC spikes; it does not sustain, so the peak is the evidence.
+            var presence = 0.0
+            var contrary = 0.0
+            var counted = 0
             for frame in frames where frame.count > max(presentIndex, absentIndex) {
                 let pad = frame[0]
                 guard pad < 0.5 else { continue }
-                presence.append(frame[presentIndex])
-                contrary.append(frame[absentIndex])
+                presence = max(presence, frame[presentIndex])
+                contrary = max(contrary, frame[absentIndex])
+                counted += 1
             }
-            guard presence.count >= options.minimumFrames else { continue }
+            guard counted >= options.minimumFrames else { continue }
 
-            let meanPresence = presence.reduce(0, +) / Double(presence.count)
-            let meanContrary = contrary.reduce(0, +) / Double(contrary.count)
-
-            let wanted = expectation.present ? meanPresence : meanContrary
-            let against = expectation.present ? meanContrary : meanPresence
+            let wanted = expectation.present ? presence : contrary
+            let against = expectation.present ? contrary : presence
             guard wanted < options.presenceThreshold, against > options.contraryThreshold else { continue }
 
             notes.append(

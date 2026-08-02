@@ -401,6 +401,67 @@ It is still **off by default**, notes are capped at `.moderate` confidence, and 
 stays silent unless the model is confidently against the rule. **Nothing here has been
 calibrated against expert reciters or reviewed by a qārī**, and the UI says so.
 
+## Calibrating tajweed against real recitation
+
+`IqraEval --calibrate-tajweed` measures what the Muaalem model says when a rule **is**
+applied correctly. It needs no labelled errors, which is what makes it possible at all: a
+reference recitation by a qārī applies every rule the text requires, so running the model
+across hundreds of them gives its output distribution on correct recitation. A threshold
+placed in that distribution's low tail then means something that can be stated — "below
+what expert recitation produces, and here is the fraction of expert recitation it would
+wrongly question".
+
+It is one-sided. It cannot report a detection rate, because nothing measured contains a
+mistake. It answers the prior question: whether the model separates anything at all.
+
+**It found that audio tajweed checking had never worked.** Two bugs, both silent:
+
+1. **The model's output was being read as the wrong type.** Core ML returns float16; the
+   code read `Float`. Every logit was assembled from halves of two different values.
+2. **The buffer is strided.** A `[1, 250, 3]` output has strides `[8000, 32, 1]` — each
+   frame's three logits padded to 32 elements for the Neural Engine — and the read
+   assumed packed layout bounded by the logical element count.
+
+Softmax over the resulting nonsense gave a flat third across every class. Across 251 rule
+occurrences, the probability of the required attribute and of its contrary both read
+34.3%. A uniform distribution is indistinguishable, from outside, from a model with no
+opinion — so the analyzer never said anything about any rule in any recitation, which
+looks exactly like "tajweed checking finds nothing wrong". The same model in Python, on
+the same features, puts 0.90–0.95 on its chosen class.
+
+**Then it found the statistic was wrong.** Muaalem is a CTC network: it labels almost
+every frame blank and spikes where it has something to say. The analyzer averaged over
+the whole word. A ghunnah is one spike on one nūn inside a word of six letters, and the
+other letters carry the contrary label perfectly correctly — so the average measured how
+much of the word is *not* a ghunnah, which is most of it in every recitation. Over 216
+correct occurrences:
+
+| rule | mean over word (median) | peak in word — p5 / p25 / median |
+|---|---|---|
+| ghunnah | 20.0% | 0.0% / 97.2% / 100.0% |
+| ikhfāʾ | 25.0% | 1.8% / 99.8% / 100.0% |
+| qalqalah | 14.3% | 0.0% / 94.1% / 99.9% |
+| idghām | 14.3% | 0.0% / 0.0% / 94.9% |
+| iqlāb | 14.3% | 0.0% / 0.3% / 100.0% |
+
+The shipped mean-based test would have questioned **145 of 216 correct occurrences — 67%
+of Al-Husary's own recitation.** The verdict is now taken from the peak, and idghām and
+iqlāb are excluded from audio checking entirely: they show no spike at all in a quarter of
+occurrences a qārī recited correctly, which is a property of the model rather than of the
+recitation. Both are still detected in the text and coloured on the page.
+
+**Even so it stays off by default.** At the current thresholds, 11.6% of correct
+occurrences of the rules it does judge would be questioned — about one in nine. The
+remaining tail is occurrences where the model spikes nowhere in the word, most likely
+because the word's timing is wrong or the rule crosses into the next word, and no
+threshold fixes that. What is still missing before this could be trusted:
+
+- **Recitation with known errors in it.** Everything above is one-sided.
+- **A qārī.** Nothing here has been reviewed by one.
+- **A stated riwāyah.** Calibration is on Ḥafṣ ʿan ʿĀṣim and does not transfer; madd
+  lengths differ legitimately between readings, and a model calibrated on one will call
+  another wrong.
+
 ## Reference recitation
 
 Flagged āyāt can be played back in a reciter's voice — Al-Husary murattal by default, with

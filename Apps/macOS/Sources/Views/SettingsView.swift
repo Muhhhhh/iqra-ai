@@ -275,7 +275,7 @@ private struct TajweedSettings: View {
                 Text("From your recitation")
             } footer: {
                 Label(
-                    "Experimental, and off by default. Nothing here has been calibrated against expert reciters or reviewed by a qārī. The app only asks whether the attribute the text requires was actually present — it does not grade recitation — and it stays silent unless the model is confidently against the rule. Treat anything it says as a prompt to listen again, never as a correction.",
+                    "Experimental, and off by default. Measured against Al-Husary's murattal, about one in nine correctly recited ghunnahs, ikhfāʾ and qalqalah is still questioned — and idghām and iqlāb are not judged from audio at all, because the model gives no answer for a quarter of correct ones. Calibration is on Ḥafṣ ʿan ʿĀṣim and does not transfer to another riwāyah. Nothing here has been reviewed by a qārī. The app only asks whether the attribute the text requires was actually present — it does not grade recitation — and it stays silent unless the model is confidently against the rule. Treat anything it says as a prompt to listen again, never as a correction.",
                     systemImage: "hand.raised.fill"
                 )
                 .font(.caption)

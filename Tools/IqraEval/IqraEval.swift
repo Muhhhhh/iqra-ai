@@ -34,6 +34,10 @@ struct IqraEval {
         }
 
         do {
+            if arguments.calibrateTajweed {
+                try await TajweedCalibration.run(arguments)
+                return
+            }
             try await run(arguments)
         } catch {
             FileHandle.standardError.write(Data("error: \(error)\n".utf8))
@@ -710,6 +714,13 @@ struct Arguments {
     var limitPerSurah: Int = 2
     /// Decode each segment several ways and let the expected text choose between them.
     var nBest = false
+    /// Measure what the tajweed model says on recitation known to be correct.
+    var calibrateTajweed = false
+    /// Explicit tajweed weights, for comparing conversions.
+    var tajweedModelPath: String?
+    var dumpTajweedOutput = false
+    /// Frames of evidence required, matching the analyzer's own minimum.
+    var minimumFrames = 3
     var verbose = false
     var wantsHelp = false
 
@@ -725,6 +736,7 @@ struct Arguments {
       --beam 1
       --limit 2                   passages per surah
       --nbest                     decode each segment several ways and rescore
+      --calibrate-tajweed         measure the tajweed model on correct recitation
       --verbose                   print every case
     """
 
@@ -746,6 +758,10 @@ struct Arguments {
             case "--beam": beamSize = next().flatMap { Int($0) } ?? beamSize
             case "--limit": limitPerSurah = next().flatMap { Int($0) } ?? limitPerSurah
             case "--nbest": nBest = true
+            case "--calibrate-tajweed": calibrateTajweed = true
+            case "--tajweed-model-path": tajweedModelPath = next()
+            case "--dump-tajweed-output": dumpTajweedOutput = true
+            case "--minimum-frames": minimumFrames = next().flatMap { Int($0) } ?? minimumFrames
             case "--verbose": verbose = true
             case "-h", "--help": wantsHelp = true
             default: break
