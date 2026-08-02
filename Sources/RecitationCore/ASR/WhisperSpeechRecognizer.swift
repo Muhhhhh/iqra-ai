@@ -39,6 +39,24 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         /// theoretical one. Anything it invents becomes a fabricated mistake in someone's
         /// recitation, so silence is refused before it ever reaches the model.
         public var silenceFloor: Float
+        /// Peak level speech is scaled to before transcription. 0 disables.
+        ///
+        /// Recitation is quiet — murattal especially — and whisper transcribes a quiet
+        /// signal markedly worse. It does not mishear it: it *omits* it. Measured over
+        /// nine passages of Al-Baqarah, An-Nisā' and Al-A'rāf, taken from studio
+        /// recordings with nothing wrong with them:
+        ///
+        ///     input                 WER     words never transcribed   falsely flagged
+        ///     as recorded           56.1%   88                        29.2%
+        ///     gain-normalised       48.9%   44                        18.9%
+        ///
+        /// Half the dropped words come back for a multiplication. Applied *after* the
+        /// silence check, never before: normalising silence would amplify room noise to
+        /// speech level and hand whisper exactly the input it invents words over.
+        public var normalisationPeak: Float
+        /// Ceiling on that scaling, so a nearly-silent segment that passed the floor is
+        /// not lifted into noise.
+        public var maximumNormalisationGain: Float
         /// Reject the whole transcription unless at least this fraction of its words
         /// occupy real time.
         ///
@@ -80,6 +98,8 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             noSpeechThreshold: Float = 0.6,
             suppressNonSpeechTokens: Bool = true,
             silenceFloor: Float = 0.005,
+            normalisationPeak: Float = 0.9,
+            maximumNormalisationGain: Float = 8,
             minimumTimedTokenFraction: Double = 0.25,
             useDTWTimestamps: Bool = true,
             alignmentHeads: AlignmentHeads = .base
@@ -90,6 +110,8 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             self.noSpeechThreshold = noSpeechThreshold
             self.suppressNonSpeechTokens = suppressNonSpeechTokens
             self.silenceFloor = silenceFloor
+            self.normalisationPeak = normalisationPeak
+            self.maximumNormalisationGain = maximumNormalisationGain
             self.minimumTimedTokenFraction = minimumTimedTokenFraction
             self.useDTWTimestamps = useDTWTimestamps
             self.alignmentHeads = alignmentHeads
@@ -190,6 +212,19 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         guard chunk.rms >= options.silenceFloor else { return .empty }
 
         var samples = chunk.samples
+
+        // Lift the level, now that the audio is known to carry speech. Whisper omits
+        // quiet words rather than mishearing them — see `normalisationPeak`.
+        if options.normalisationPeak > 0 {
+            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+            if peak > 0 {
+                let gain = min(options.normalisationPeak / peak, options.maximumNormalisationGain)
+                if gain > 1.01 {
+                    samples = samples.map { $0 * gain }
+                }
+            }
+        }
+
         if samples.count < Self.minimumSamples {
             samples.append(contentsOf: [Float](repeating: 0, count: Self.minimumSamples - samples.count))
         }

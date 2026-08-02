@@ -43,6 +43,8 @@ public actor RecitationPipeline {
     /// "nothing found yet" must not be presented as "nothing found".
     private var tajweedNotes: [TajweedNote] = []
     private var tajweedCoverage: TajweedCoverage = .none
+    /// Lifts quiet recitation before the voice detector sees it — see `AutomaticGain`.
+    private var gain = AutomaticGain()
     private var state: PipelineState = .idle
     private var captureTask: Task<Void, Never>?
     private var continuation: AsyncStream<PipelineEvent>.Continuation?
@@ -83,6 +85,7 @@ public actor RecitationPipeline {
         heardTokens = []
         tajweedNotes = []
         tajweedCoverage = .none
+        gain.reset()
         await components.vad.reset()
         transition(to: .starting)
 
@@ -169,8 +172,12 @@ public actor RecitationPipeline {
     // MARK: - Frame handling
 
     private func handle(frame: AudioChunk) async {
+        // The level shown to the reciter is the *input* level, before any gain: it is
+        // there to tell them whether the microphone is working and whether they are
+        // clipping, and reporting a normalised level would hide both.
         emit(.level(rms: min(1.0, frame.rms * 12), peak: frame.peak))
-        for segment in await components.vad.process(frame) {
+        let lifted = gain.apply(to: frame)
+        for segment in await components.vad.process(lifted) {
             await process(segment: segment)
         }
     }

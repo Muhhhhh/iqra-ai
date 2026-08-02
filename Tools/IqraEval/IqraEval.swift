@@ -94,7 +94,8 @@ struct IqraEval {
         var summaries: [(silence: TimeInterval, report: Report)] = []
         for trailingSilence in arguments.trailingSilences {
           for maximumSegment in arguments.maximumSegments {
-            print("── trailing silence \(format(trailingSilence, 2)) s, cap \(format(maximumSegment, 0)) s ".padding(toLength: 72, withPad: "─", startingAt: 0))
+           for degradation in arguments.degradations {
+            print("── \(degradation.label) ".padding(toLength: 72, withPad: "─", startingAt: 0))
             let report = try await measure(
                 cases: cases,
                 modelURL: model.url,
@@ -104,11 +105,13 @@ struct IqraEval {
                 beamSize: arguments.beamSize,
                 nBest: arguments.nBest,
                 gapCost: arguments.gapCost,
+                degradation: degradation,
                 verbose: arguments.verbose
             )
             report.printSummary()
             summaries.append((trailingSilence, report))
             print("")
+           }
           }
         }
 
@@ -300,6 +303,79 @@ struct IqraEval {
         return cases
     }
 
+    /// Degradations of the input, to separate "the microphone" from "the model".
+    ///
+    /// The reference recitations are studio recordings, so measuring them clean gives
+    /// the floor the model imposes no matter how good the audio is. Measuring them
+    /// degraded says how much worse a real room and a real microphone make it. Both
+    /// numbers are needed to answer "is it my audio?" — the first alone cannot.
+    enum Degradation {
+        case none
+        /// Additive white noise at the given signal-to-noise ratio, in dB.
+        case noise(Double)
+        /// Input driven past full scale and clipped — what happens when the gain is up
+        /// too high, or the mic is too close.
+        case clipping(Double)
+        /// Recorded far too quietly, as from across a room.
+        case quiet(Double)
+        /// Scaled so the loudest sample reaches the given level, without distortion.
+        case normalised(Double)
+
+        static func parse(_ text: String) -> Degradation? {
+            let parts = text.split(separator: ":")
+            switch parts.first {
+            case "clean": return Degradation.none
+            case "noise": return parts.count > 1 ? .noise(Double(parts[1]) ?? 20) : .noise(20)
+            case "clip": return parts.count > 1 ? .clipping(Double(parts[1]) ?? 0.3) : .clipping(0.3)
+            case "quiet": return parts.count > 1 ? .quiet(Double(parts[1]) ?? 0.05) : .quiet(0.05)
+            case "norm": return parts.count > 1 ? .normalised(Double(parts[1]) ?? 0.9) : .normalised(0.9)
+            default: return nil
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .none: return "clean (studio)"
+            case .noise(let snr): return "noise at \(Int(snr)) dB SNR"
+            case .clipping(let ceiling): return "clipped at \(Int(ceiling * 100))% of full scale"
+            case .quiet(let scale): return "quiet, \(Int(scale * 100))% of level"
+            case .normalised(let peak): return "gain-normalised to \(Int(peak * 100))% peak"
+            }
+        }
+
+        func apply(to chunk: AudioChunk) -> AudioChunk {
+            switch self {
+            case .none:
+                return chunk
+            case .noise(let snr):
+                let power = chunk.samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(max(chunk.samples.count, 1))
+                let noisePower = power / pow(10.0, snr / 10.0)
+                let amplitude = Float(noisePower.squareRoot())
+                var generator = SystemRandomNumberGenerator()
+                let samples = chunk.samples.map { sample -> Float in
+                    // Box–Muller, so the noise is Gaussian rather than uniform.
+                    let u1 = Double.random(in: 1e-9...1, using: &generator)
+                    let u2 = Double.random(in: 0...1, using: &generator)
+                    let gaussian = Float((-2 * log(u1)).squareRoot() * cos(2 * .pi * u2))
+                    return sample + gaussian * amplitude
+                }
+                return AudioChunk(samples: samples, startTime: chunk.startTime)
+            case .clipping(let ceiling):
+                // Drive it up, then clamp: the shape of real clipping, not just a limit.
+                let gain = Float(1.0 / max(ceiling, 0.01))
+                let samples = chunk.samples.map { min(max($0 * gain, -1), 1) }
+                return AudioChunk(samples: samples, startTime: chunk.startTime)
+            case .quiet(let scale):
+                return AudioChunk(samples: chunk.samples.map { $0 * Float(scale) }, startTime: chunk.startTime)
+            case .normalised(let target):
+                let peak = chunk.samples.reduce(Float(0)) { max($0, abs($1)) }
+                guard peak > 0.0001 else { return chunk }
+                let gain = Float(target) / peak
+                return AudioChunk(samples: chunk.samples.map { $0 * gain }, startTime: chunk.startTime)
+            }
+        }
+    }
+
     /// Join āyāt with a pause between them, and a little silence at each end.
     ///
     /// The leading silence is not padding: the VAD needs some non-speech before the
@@ -362,6 +438,7 @@ struct IqraEval {
         beamSize: Int,
         nBest: Bool,
         gapCost: Double,
+        degradation: Degradation,
         verbose: Bool
     ) async throws -> Report {
         let heads = AlignmentHeads.inferred(fromFileNamed: modelURL.lastPathComponent)
@@ -406,14 +483,16 @@ struct IqraEval {
             var durations: [TimeInterval] = []
             let started = Date()
 
+            let presented = degradation.apply(to: testCase.audio)
+            var gain = AutomaticGain()
             var offset = 0
-            while offset < testCase.audio.samples.count {
-                let end = min(offset + frameSamples, testCase.audio.samples.count)
+            while offset < presented.samples.count {
+                let end = min(offset + frameSamples, presented.samples.count)
                 let frame = AudioChunk(
-                    samples: Array(testCase.audio.samples[offset..<end]),
+                    samples: Array(presented.samples[offset..<end]),
                     startTime: Double(offset) / AudioChunk.canonicalSampleRate
                 )
-                for segment in await vad.process(frame) {
+                for segment in await vad.process(gain.apply(to: frame)) {
                     segmentCount += 1
                     durations.append(segment.duration)
                     var candidates: [[TranscribedToken]] = []
@@ -447,7 +526,7 @@ struct IqraEval {
             }
 
             let elapsed = Date().timeIntervalSince(started)
-            let duration = Double(testCase.audio.samples.count) / AudioChunk.canonicalSampleRate
+            let duration = Double(presented.samples.count) / AudioChunk.canonicalSampleRate
             let result = aligner.align(heard: tokens, against: testCase.target, isFinal: true)
             report.record(
                 testCase,
@@ -819,6 +898,8 @@ struct Arguments {
     /// "match thirty words wrongly" price the same and noise chooses between them —
     /// which is how the highlighting ends up far from where someone is reciting.
     var gapCost = MatchingOptions.default.deletionCost
+    /// Input conditions to measure under.
+    var degradations: [IqraEval.Degradation] = [.none]
     /// Measure what the tajweed model says on recitation known to be correct.
     var calibrateTajweed = false
     /// Explicit tajweed weights, for comparing conversions.
@@ -864,6 +945,9 @@ struct Arguments {
             case "--limit": limitPerSurah = next().flatMap { Int($0) } ?? limitPerSurah
             case "--nbest": nBest = true
             case "--gap-cost": gapCost = next().flatMap { Double($0) } ?? gapCost
+            case "--degrade": degradations = next()?.split(separator: ",").compactMap {
+                IqraEval.Degradation.parse(String($0))
+            } ?? degradations
             case "--calibrate-tajweed": calibrateTajweed = true
             case "--tajweed-model-path": tajweedModelPath = next()
             case "--dump-tajweed-output": dumpTajweedOutput = true
