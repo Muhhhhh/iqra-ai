@@ -19,8 +19,15 @@ struct ContentView: View {
     @State private var lastAutoTurn: Date?
     /// The page currently loaded into the session, so the one being left can be named.
     @State private var loadedPage: Int?
-    /// The marks from the page just left, kept until another page displaces it.
-    @State private var heldPage: (page: Int, results: RecitationSessionModel.SessionResults)?
+    /// Marks from pages recently left, newest last.
+    ///
+    /// A single slot was not enough once the page turns by itself: reciting page N,
+    /// turning to N+1, then reciting anything at all on N+1 put N+1 in the only slot and
+    /// evicted N — so going back to the page you had just recited showed nothing, which
+    /// is precisely when you want it. A few pages are kept instead. Only the marks: the
+    /// audio is released on every turn, so this stays small.
+    @State private var heldPages: [(page: Int, results: RecitationSessionModel.SessionResults)] = []
+    private static let heldPageLimit = 6
     /// True while the page shows marks recalled from before rather than a live session.
     @State private var isShowingHeldMarks = false
     @State private var pageTurnTask: Task<Void, Never>?
@@ -243,7 +250,9 @@ struct ContentView: View {
         // already released when the page turned — so this is the marks, not a session
         // you can carry on with.
         if let outgoing = loadedPage, outgoing != page, !model.results.isEmpty {
-            heldPage = (page: outgoing, results: model.results)
+            heldPages.removeAll { $0.page == outgoing }
+            heldPages.append((page: outgoing, results: model.results))
+            if heldPages.count > Self.heldPageLimit { heldPages.removeFirst() }
         }
         loadedPage = page
 
@@ -251,7 +260,7 @@ struct ContentView: View {
         // it — that is what makes an auto-turn seamless rather than a stop and restart.
         if model.isRunning {
             model.retarget(target)
-        } else if let held = heldPage, held.page == page {
+        } else if let held = heldPages.last(where: { $0.page == page }) {
             model.restore(held.results, for: target)
             isShowingHeldMarks = true
         } else {

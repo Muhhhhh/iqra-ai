@@ -517,29 +517,32 @@ struct SelfCorrectionTests {
         #expect(result.repetitions.isEmpty)
     }
 
-    @Test("A word repeated from far away in a long passage is still an addition")
-    func distantWordIsNotARepetition() {
-        // The repetition window is local by design: saying a word from much later in the
-        // passage is not self-correction.
+    @Test("A word repeated from far away is still an addition")
+    func distantRepeatIsStillAnAddition() {
+        // The repetition window is wide by default — 40 words — because going back over
+        // an āyah to correct yourself lands far from where the matcher was. It is not
+        // unbounded, and this is the reason: a word belonging to a completely different
+        // part of the passage is not a re-attempt at what is being recited now.
         //
-        // The words must be genuinely dissimilar — a passage of near-identical words
-        // would make every insertion look like a repetition for the right reason.
+        // Tested against an explicit narrow window rather than the default, so the
+        // passage can use real words that are actually distinct from one another. The
+        // default's value is a measured tuning figure; what matters here is that the
+        // bound exists and is applied.
+        let narrow = TokenAligner(options: .init(repetitionWindow: 4))
         let vocabulary = [
             "قل", "هو", "الله", "احد", "الصمد", "لم", "يلد", "ولم", "يولد", "يكن",
-            "له", "كفوا", "رب", "الناس", "ملك", "اله", "شر", "الوسواس", "الخناس", "الذي",
-            "يوسوس", "صدور", "الجنة", "نعبد", "نستعين", "اهدنا", "الصراط", "المستقيم",
-            "انعمت", "عليهم", "غير", "المغضوب", "الضالين", "مالك", "يوم", "الدين",
+            "له", "كفوا", "رب", "الناس", "ملك", "اله", "شر", "الوسواس",
         ]
-        let long = RecitationTarget(verses: (0..<12).map { index in
+        let long = RecitationTarget(verses: (0..<6).map { index in
             Verse(
                 reference: VerseReference(surah: 55, ayah: index + 1),
                 text: vocabulary[(index * 3)..<(index * 3 + 3)].joined(separator: " ")
             )
         })
         var words = long.flattenedWords.map(\.text)
-        // Insert a word from the very end near the beginning.
+        // A word from the very end, spoken near the beginning — far outside the window.
         words.insert(long.flattenedWords.last!.text, at: 1)
-        let result = aligner.align(heard: heard(words), against: long, isFinal: true)
+        let result = narrow.align(heard: heard(words), against: long, isFinal: true)
 
         #expect(result.additions.count == 1, "a distant word was excused as a repetition")
     }

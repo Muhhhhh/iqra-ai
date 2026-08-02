@@ -27,7 +27,21 @@ public struct MatchingOptions: Sendable, Equatable {
     /// unmatched words, and reporting them as additions tells someone they inserted
     /// words into the Quran. Anything that also occurs this close by is treated as a
     /// repetition instead.
+    ///
+    /// Widened from 8 to 40 once input gain brought the rest of the recitation into the
+    /// matcher: going back over an āyah puts the re-attempt far more than eight words
+    /// from where the matcher last was. Measured on clean recitation, fabricated
+    /// additions fell from 23 to 12 and re-recited āyāt misread as added words from 56
+    /// to 24, with no change to word verdicts or to wrong-āyah detection. Past 40 there
+    /// is no further gain.
     public var repetitionWindow: Int
+    /// Recognizer confidence below which an unmatched word is not reported at all.
+    ///
+    /// Insertions were exempt from the confidence rule that governs every other verdict,
+    /// which did not matter while half the recitation never reached the matcher. Once
+    /// input gain fixed that, the extra tokens arrived and fabricated additions on
+    /// correct recitation went from 7 to 24.
+    public var insertionConfidenceFloor: Double
     /// How near another matched word a match must be to count as corroborated.
     ///
     /// Recitation is continuous, so matches arrive in runs. A single word matched with
@@ -56,12 +70,14 @@ public struct MatchingOptions: Sendable, Equatable {
         deletionCost: Double = 1.0,
         insertionCost: Double = 1.0,
         gapOpenCost: Double = 0.5,
-        repetitionWindow: Int = 8,
+        repetitionWindow: Int = 40,
+        insertionConfidenceFloor: Double = 0.45,
         corroborationWindow: Int = 6,
         minimumMatchRun: Int = 3
     ) {
         self.corroborationWindow = corroborationWindow
         self.minimumMatchRun = minimumMatchRun
+        self.insertionConfidenceFloor = insertionConfidenceFloor
         self.matchThreshold = matchThreshold
         self.uncertainThreshold = uncertainThreshold
         self.confidenceFloor = confidenceFloor
@@ -432,6 +448,11 @@ public struct TokenAligner: Sendable {
 
         for pending in pendingInsertions {
             let token = heard[pending.heardIndex].token
+            // The same rule substitutions already follow: if the model was not sure what
+            // it heard, we are not sure the reciter said it. An unmatched low-confidence
+            // token is far more likely a recogniser artefact than a word someone added to
+            // the Quran, and saying nothing costs nothing.
+            guard token.confidence >= options.insertionConfidenceFloor else { continue }
             insertions.append(
                 InsertedWord(
                     text: token.text,

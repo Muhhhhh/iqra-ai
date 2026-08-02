@@ -105,6 +105,7 @@ struct IqraEval {
                 beamSize: arguments.beamSize,
                 nBest: arguments.nBest,
                 gapCost: arguments.gapCost,
+                repetitionWindow: arguments.repetitionWindow,
                 degradation: degradation,
                 verbose: arguments.verbose
             )
@@ -438,6 +439,7 @@ struct IqraEval {
         beamSize: Int,
         nBest: Bool,
         gapCost: Double,
+        repetitionWindow: Int,
         degradation: Degradation,
         verbose: Bool
     ) async throws -> Report {
@@ -470,7 +472,11 @@ struct IqraEval {
         )
         // Gap cost against substitution cost is what decides whether the matcher would
         // rather skip ahead than admit it misheard. See `--gap-cost`.
-        let aligner = TokenAligner(options: .init(deletionCost: gapCost, insertionCost: gapCost))
+        let aligner = TokenAligner(options: .init(
+            deletionCost: gapCost,
+            insertionCost: gapCost,
+            repetitionWindow: repetitionWindow
+        ))
 
         var report = Report(trailingSilence: trailingSilence)
         let frameSamples = Int(0.1 * AudioChunk.canonicalSampleRate)
@@ -900,6 +906,7 @@ struct Arguments {
     var gapCost = MatchingOptions.default.deletionCost
     /// Input conditions to measure under.
     var degradations: [IqraEval.Degradation] = [.none]
+    var repetitionWindow = MatchingOptions.default.repetitionWindow
     /// Measure what the tajweed model says on recitation known to be correct.
     var calibrateTajweed = false
     /// Explicit tajweed weights, for comparing conversions.
@@ -944,6 +951,7 @@ struct Arguments {
             case "--beam": beamSize = next().flatMap { Int($0) } ?? beamSize
             case "--limit": limitPerSurah = next().flatMap { Int($0) } ?? limitPerSurah
             case "--nbest": nBest = true
+            case "--repetition-window": repetitionWindow = next().flatMap { Int($0) } ?? repetitionWindow
             case "--gap-cost": gapCost = next().flatMap { Double($0) } ?? gapCost
             case "--degrade": degradations = next()?.split(separator: ",").compactMap {
                 IqraEval.Degradation.parse(String($0))
