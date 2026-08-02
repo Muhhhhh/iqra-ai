@@ -81,6 +81,10 @@ struct ContentView: View {
                 ),
                 tajweed: settings.showsTajweed ? library.tajweedSpansByWord : [:],
                 prefersCalligraphy: settings.prefersCalligraphicPage,
+                tajweedFindings: Dictionary(
+                    model.tajweedNotes.map { ($0.targetIndex, $0.rule) },
+                    uniquingKeysWith: { first, _ in first }
+                ),
                 onSelectWord: { word in
                     Task { await showTranslation(for: word) }
                 }

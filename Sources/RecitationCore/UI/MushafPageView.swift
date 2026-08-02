@@ -115,6 +115,13 @@ public struct MushafPageView: View {
     /// Turning this off falls back to Unicode text, which is the only way to colour
     /// tajweed letter by letter — see `MushafWordView`.
     private let prefersCalligraphy: Bool
+    /// Words carrying a tajweed finding, and which rule was questioned.
+    ///
+    /// Marked with an underline rather than a colour: the tajweed *colouring* says which
+    /// rule a word carries, which is derived from the text and always true. A finding is
+    /// a judgement about how it was recited, which is a much weaker claim, and the two
+    /// must not look like the same kind of statement.
+    private let tajweedFindings: [Int: TajweedRule]
     /// Multiplier on the fit-to-window size. 1 fills the available area; above that the
     /// page overflows and the view scrolls.
     @Binding private var zoom: CGFloat
@@ -132,11 +139,13 @@ public struct MushafPageView: View {
         zoom: Binding<CGFloat> = .constant(1),
         tajweed: [Int: [TajweedOccurrence]] = [:],
         prefersCalligraphy: Bool = true,
+        tajweedFindings: [Int: TajweedRule] = [:],
         onSelectWord: @escaping (MushafWord) -> Void = { _ in }
     ) {
         self._zoom = zoom
         self.tajweed = tajweed
         self.prefersCalligraphy = prefersCalligraphy
+        self.tajweedFindings = tajweedFindings
         self.page = page
         self.evaluations = Dictionary(
             words.map { ($0.targetIndex, $0) },
@@ -333,6 +342,7 @@ public struct MushafPageView: View {
                 sourceText: word.text,
                 isCalligraphic: layout.usesCalligraphy && !word.code.isEmpty,
                 tajweed: word.targetIndex.flatMap { tajweed[$0] } ?? [],
+                tajweedFinding: word.targetIndex.flatMap { tajweedFindings[$0] },
                 isSelected: word.targetIndex != nil && selection == word.targetIndex
             ) {
                 if let index = word.targetIndex {
@@ -345,6 +355,16 @@ public struct MushafPageView: View {
 }
 
 // MARK: - Word
+
+/// A single horizontal rule, so it can be stroked with a dash pattern.
+private struct UnderlineStroke: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return path
+    }
+}
 
 private struct MushafWordView: View {
     let word: MushafWord
@@ -372,6 +392,8 @@ private struct MushafWordView: View {
     /// meant to stop, the calligraphic page shows no tajweed colour at all; the setting
     /// that chooses between the two says so.
     let tajweed: [TajweedOccurrence]
+    /// A rule this word was questioned on, if any.
+    let tajweedFinding: TajweedRule?
     let isSelected: Bool
     let onTap: () -> Void
 
@@ -426,6 +448,25 @@ private struct MushafWordView: View {
                         // the baseline, and a rule sitting under those reads as
                         // belonging to the line beneath rather than to this word.
                         .offset(y: fontSize * 0.02)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if let tajweedFinding {
+                    // Dashed, and in the rule's own colour, so it reads as a different
+                    // kind of remark from the solid line that marks a word verdict — and
+                    // sits below it, so a word can carry both without them merging.
+                    UnderlineStroke()
+                        .stroke(
+                            TajweedStyle.colour(for: tajweedFinding),
+                            style: StrokeStyle(
+                                lineWidth: max(1.2, fontSize * 0.035),
+                                lineCap: .round,
+                                dash: [fontSize * 0.11, fontSize * 0.09]
+                            )
+                        )
+                        .frame(height: max(1.2, fontSize * 0.035))
+                        .offset(y: fontSize * 0.12)
+                        .allowsHitTesting(false)
                 }
             }
             .background {

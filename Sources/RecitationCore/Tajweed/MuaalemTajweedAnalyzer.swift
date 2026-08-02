@@ -62,11 +62,26 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         public var windowSeconds: Double
 
         public init(
-            // At the 5th percentile of correct recitation: questioning a rule this way
-            // is wrong about one time in twenty on a qārī, before any real mistake is
-            // considered. That is the cost being accepted, stated in a number.
-            presenceThreshold: Double = 0.02,
-            contraryThreshold: Double = 0.90,
+            // Loosened deliberately, and the room to loosen is small: the model's
+            // output is bimodal — a spike near 1 or nothing near 0 — so almost nothing
+            // sits between the thresholds to be admitted by moving them. Measured over
+            // 205 correct occurrences of the rules judged:
+            //
+            //     peak below   2%     10%    25%    50%    75%    90%
+            //     questioned   11.2%  11.8%  12.4%  12.4%  12.4%  12.4%
+            //
+            //     contrary above  90%    75%    50%    25%    0%
+            //     questioned      12.4%  14.0%  14.0%  14.0%  14.0%
+            //
+            // 11.2% at the tightest, 14.0% at the loosest possible setting. This sits at
+            // the loose end: about one correctly recited rule in seven is questioned,
+            // against one in nine before.
+            //
+            // What that buys is unmeasured. Nothing in the calibration set contains a
+            // mistake, so there is no detection rate to weigh against it — only the
+            // certainty that more correct recitation is questioned.
+            presenceThreshold: Double = 0.5,
+            contraryThreshold: Double = 0.5,
             minimumFrames: Int = 3,
             junctionWindow: TimeInterval = 0.2,
             windowSeconds: Double = 10

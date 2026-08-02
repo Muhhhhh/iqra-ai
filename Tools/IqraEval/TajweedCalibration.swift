@@ -383,6 +383,27 @@ enum TajweedCalibration {
         }
         print("")
 
+        // What loosening the threshold would cost, in the only currency that matters
+        // here: correctly recited rules questioned.
+        print("Fraction of correct recitation questioned, by how loose the threshold is:")
+        print("  peak below   " + [0.02, 0.10, 0.25, 0.50, 0.75, 0.90].map { pct($0) }.joined())
+        let judgedAll = samples.filter { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
+        let rates = [0.02, 0.10, 0.25, 0.50, 0.75, 0.90].map { threshold -> String in
+            let flagged = judgedAll.count { $0.peak < threshold && max($0.contrary, 1 - $0.peak) > 0.90 }
+            return pct(Double(flagged) / Double(max(judgedAll.count, 1)))
+        }
+        print("  questioned   " + rates.joined())
+        print("")
+        print("The same, varying how hard the model must spike on the *contrary* reading")
+        print("before anything is said (peak threshold held at 50%):")
+        print("  contrary     " + [0.9, 0.75, 0.5, 0.25, 0.0].map { pct($0) }.joined())
+        let contraryRates = [0.9, 0.75, 0.5, 0.25, 0.0].map { threshold -> String in
+            let flagged = judgedAll.count { $0.peak < 0.5 && max($0.contrary, 1 - $0.peak) > threshold }
+            return pct(Double(flagged) / Double(max(judgedAll.count, 1)))
+        }
+        print("  questioned   " + contraryRates.joined())
+        print("")
+
         // Exactly what the analyzer does: peak-based, and only the rules it judges.
         let judged = samples.filter { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
         let contraryPeak = { (sample: Sample) in max(sample.contrary, 1 - sample.peak) }
