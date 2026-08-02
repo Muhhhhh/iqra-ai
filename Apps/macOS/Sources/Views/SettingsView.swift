@@ -68,6 +68,19 @@ private struct MatchingSettings: View {
             }
 
             Section {
+                Toggle("Check doubted words against the audio", isOn: $settings.confirmsWordsWithAudio)
+                    .disabled(!settings.canConfirmWordsWithAudio)
+                Text(settings.canConfirmWordsWithAudio
+                     ? "When the matcher doubts a word, the expected sounds are aligned to your recording and the doubt is dropped if they are there. Measured on reference recitation it removes about a fifth of the false flags without missing any more mistakes. Doubles the work per phrase, and keeps the pronunciation model in memory."
+                     : "Needs the pronunciation model and the phoneme script — run scripts/convert-tajweed-model.py and scripts/export-phonemes.py.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("Second opinion")
+            }
+
+            Section {
                 Button("Restore Defaults") { settings.resetTuningToDefaults() }
             }
         }

@@ -80,6 +80,20 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         /// recovers alignment from attention, which the fine-tune preserves. v2 tajweed
         /// measures durations over these boundaries, so their quality is not cosmetic.
         public var useDTWTimestamps: Bool
+        /// Longest a single word may be reported as lasting, in seconds.
+        ///
+        /// DTW gives one anchor per word — the moment it was emitted — so a word is taken
+        /// to run from its own anchor to the next word's. When the next anchor is far
+        /// away, or the model emitted few tokens over a long stretch, that subtraction
+        /// produces spans no word could occupy: measured on Al-Baqarah, ٱلصُّحُّمِ was
+        /// reported as lasting 29 seconds and تَسَآءَلُونَ 25.
+        ///
+        /// Nothing downstream can survive that. Tajweed reads ṣifāt over a word's frames,
+        /// the review panel plays a word back, and an "added word" inherits the span of
+        /// whatever preceded it — which is how a hallucinated token became a 29-second
+        /// accusation. Even a six-harakāt madd at a slow murattal pace does not reach
+        /// four seconds.
+        public var maximumWordDuration: TimeInterval
         /// Which attention heads DTW reads alignment from.
         ///
         /// **Must match the weights.** The heads are model-specific, and whisper.cpp has
@@ -102,6 +116,7 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             maximumNormalisationGain: Float = 8,
             minimumTimedTokenFraction: Double = 0.25,
             useDTWTimestamps: Bool = true,
+            maximumWordDuration: TimeInterval = 4,
             alignmentHeads: AlignmentHeads = .base
         ) {
             self.threadCount = threadCount
@@ -114,6 +129,7 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             self.maximumNormalisationGain = maximumNormalisationGain
             self.minimumTimedTokenFraction = minimumTimedTokenFraction
             self.useDTWTimestamps = useDTWTimestamps
+            self.maximumWordDuration = maximumWordDuration
             self.alignmentHeads = alignmentHeads
         }
 
@@ -272,7 +288,8 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             context: context,
             chunkStart: chunk.startTime,
             noSpeechThreshold: options.noSpeechThreshold,
-            useDTW: options.useDTWTimestamps
+            useDTW: options.useDTWTimestamps,
+            maximumWordDuration: options.maximumWordDuration
         )
 
         // Final guard: if most words occupy no time, this is a hallucination over
@@ -302,7 +319,8 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         context: OpaquePointer,
         chunkStart: TimeInterval,
         noSpeechThreshold: Float,
-        useDTW: Bool
+        useDTW: Bool,
+        maximumWordDuration: TimeInterval
     ) -> Transcription {
         struct Word {
             /// Raw token bytes, decoded only once the word is complete.
@@ -415,10 +433,16 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
                 // A word runs until the next word begins; the last one runs to the end
                 // of its segment.
                 let next = index + 1 < collected.count ? collected[index + 1].anchor : nil
-                end = max(anchor, next ?? max(lastSegmentEnd, anchor))
+                end = min(
+                    max(anchor, next ?? max(lastSegmentEnd, anchor)),
+                    anchor + maximumWordDuration
+                )
             } else {
                 start = word.emittedStart
-                end = max(word.emittedStart, word.emittedEnd)
+                end = min(
+                    max(word.emittedStart, word.emittedEnd),
+                    word.emittedStart + maximumWordDuration
+                )
             }
 
             return TranscribedToken(

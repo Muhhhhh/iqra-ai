@@ -697,8 +697,9 @@ private struct StatusBar: View {
                     .foregroundStyle(model.mistakeCount > 0 ? .orange : .secondary)
                 let additions = model.insertions.count { $0.kind == .addition }
                 if additions > 0 {
-                    Label("\(additions) added", systemImage: "plus.circle.fill")
-                        .foregroundStyle(.purple)
+                    Label("\(additions) unplaced", systemImage: "questionmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                        .help("Sounds the recogniser could not match to the text. Usually its own mishearing rather than words you added — not counted as mistakes.")
                 }
                 let repetitions = model.insertions.count { $0.kind == .repetition }
                 if repetitions > 0 {

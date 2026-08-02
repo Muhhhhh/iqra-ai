@@ -79,6 +79,21 @@ struct IqraEval {
         print("")
 
         // --- Material -----------------------------------------------------------
+        var scorer: PronunciationScorer?
+        if arguments.usePronunciationScoring {
+            guard let tajweedModel = MuaalemTajweedAnalyzer.locateModel(),
+                  let frontend = MuaalemFeatures.locate(),
+                  let scriptURL = PhonemeScript.locate()
+            else { throw EvalError.missing("Muaalem model, front-end, or phoneme script") }
+            scorer = PronunciationScorer(
+                model: MuaalemTajweedAnalyzer(
+                    modelURL: tajweedModel,
+                    features: try MuaalemFeatures(resourceURL: frontend)
+                ),
+                script: try PhonemeScript(contentsOf: scriptURL)
+            )
+        }
+
         let cases = try await buildCases(
             surahs: arguments.surahs,
             store: store,
@@ -106,6 +121,7 @@ struct IqraEval {
                 nBest: arguments.nBest,
                 gapCost: arguments.gapCost,
                 repetitionWindow: arguments.repetitionWindow,
+                scorer: scorer,
                 degradation: degradation,
                 verbose: arguments.verbose
             )
@@ -440,6 +456,7 @@ struct IqraEval {
         nBest: Bool,
         gapCost: Double,
         repetitionWindow: Int,
+        scorer: PronunciationScorer?,
         degradation: Degradation,
         verbose: Bool
     ) async throws -> Report {
@@ -487,6 +504,7 @@ struct IqraEval {
             var segmentCount = 0
             var emptyCount = 0
             var durations: [TimeInterval] = []
+            var collectedSegments: [AudioChunk] = []
             let started = Date()
 
             let presented = degradation.apply(to: testCase.audio)
@@ -500,6 +518,7 @@ struct IqraEval {
                 )
                 for segment in await vad.process(gain.apply(to: frame)) {
                     segmentCount += 1
+                    collectedSegments.append(segment)
                     durations.append(segment.duration)
                     var candidates: [[TranscribedToken]] = []
                     if let primary = try? await recognizer.transcribe(segment) {
@@ -517,6 +536,7 @@ struct IqraEval {
             }
             if let tail = await vad.flush() {
                 segmentCount += 1
+                collectedSegments.append(tail)
                 durations.append(tail.duration)
                 var candidates: [[TranscribedToken]] = []
                 if let primary = try? await recognizer.transcribe(tail) {
@@ -531,9 +551,42 @@ struct IqraEval {
                 if chosen.isEmpty { emptyCount += 1 } else { tokens.append(contentsOf: chosen) }
             }
 
+            // Clear words the audio supports, whatever the transcript said.
+            var cleared: Set<Int> = []
+            if let scorer {
+                let alignment = aligner.align(heard: tokens, against: testCase.target, isFinal: true)
+                for chunk in collectedSegments {
+                    let words = alignment.words.filter { word in
+                        guard let range = word.timeRange else { return false }
+                        return range.lowerBound < chunk.endTime && range.upperBound > chunk.startTime
+                    }
+                    let segment = AlignedAudioSegment(audio: chunk, transcription: .empty, words: words)
+                    cleared.formUnion(
+                        await scorer.wordsSupportedByAudio(in: segment, target: testCase.target)
+                    )
+                }
+            }
+
             let elapsed = Date().timeIntervalSince(started)
             let duration = Double(presented.samples.count) / AudioChunk.canonicalSampleRate
-            let result = aligner.align(heard: tokens, against: testCase.target, isFinal: true)
+            var result = aligner.align(heard: tokens, against: testCase.target, isFinal: true)
+            if !cleared.isEmpty {
+                result = AlignmentResult(
+                    words: result.words.map { word in
+                        guard cleared.contains(word.targetIndex), word.status.isMistake else { return word }
+                        return WordEvaluation(
+                            targetIndex: word.targetIndex,
+                            reference: word.reference,
+                            expectedText: word.expectedText,
+                            status: .correct,
+                            timeRange: word.timeRange,
+                            recognizerConfidence: word.recognizerConfidence
+                        )
+                    },
+                    insertions: result.insertions,
+                    isFinal: true
+                )
+            }
             report.record(
                 testCase,
                 result: result,
@@ -682,6 +735,20 @@ struct IqraEval {
                 }
             }
 
+            if verbose, testCase.kind == .clean, !result.additions.isEmpty {
+                for addition in result.additions {
+                    let span = addition.timeRange.map {
+                        " \(IqraEval.format($0.lowerBound, 2))–\(IqraEval.format($0.upperBound, 2))s"
+                    } ?? " no timing"
+                    let neighbour = addition.afterTargetIndex.flatMap { index in
+                        result.words.first { $0.targetIndex == index }
+                    }
+                    let neighbourSpan = neighbour?.timeRange.map {
+                        "\(IqraEval.format($0.lowerBound, 2))–\(IqraEval.format($0.upperBound, 2))s"
+                    } ?? "—"
+                    Swift.print("    ADDED “\(addition.text)”\(span) after “\(neighbour?.expectedText ?? "—")” \(neighbourSpan)")
+                }
+            }
             if verbose {
                 print("  [\(testCase.kind.rawValue)] \(testCase.label): "
                       + "\(result.mistakeCount) flagged, \(result.additions.count) added, "
@@ -922,6 +989,8 @@ struct Arguments {
     var alignedTajweed = false
     /// Test whether alignment confidence falls where the audio stops matching the text.
     var goodnessTest = false
+    /// Clear doubted words whose audio supports the expected text.
+    var usePronunciationScoring = false
     var forcedAlignVerse = VerseReference(surah: 112, ayah: 1)
     var phonemeVocabularyPath = NSString(string:
         "~/.cache/huggingface/hub/models--obadx--muaalem-model-v3_2/snapshots/01a1ef9fbe40d144ef845101e89ff924aed3fef5/vocab.json"
@@ -977,6 +1046,7 @@ struct Arguments {
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true
+            case "--pronunciation-scoring": usePronunciationScoring = true
             case "--phonemes": forcedAlignPhonemes = next()
             case "--phoneme-vocab": phonemeVocabularyPath = next() ?? phonemeVocabularyPath
             case "--verse":

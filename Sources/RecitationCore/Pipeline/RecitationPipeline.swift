@@ -9,14 +9,18 @@ public struct PipelineComponents: Sendable {
     public var recognizer: any SpeechRecognizer
     public var aligner: TokenAligner
     public var tajweed: any TajweedAnalyzer
+    /// Optional second opinion on words the matcher doubted, taken from the audio itself.
+    public var scorer: PronunciationScorer?
 
     public init(
         capture: any AudioCapture,
         vad: any VoiceActivityDetector,
         recognizer: any SpeechRecognizer,
         aligner: TokenAligner = TokenAligner(),
-        tajweed: any TajweedAnalyzer = NoOpTajweedAnalyzer()
+        tajweed: any TajweedAnalyzer = NoOpTajweedAnalyzer(),
+        scorer: PronunciationScorer? = nil
     ) {
+        self.scorer = scorer
         self.capture = capture
         self.vad = vad
         self.recognizer = recognizer
@@ -43,6 +47,8 @@ public actor RecitationPipeline {
     /// "nothing found yet" must not be presented as "nothing found".
     private var tajweedNotes: [TajweedNote] = []
     private var tajweedCoverage: TajweedCoverage = .none
+    /// Words the audio has vouched for, whatever the transcript said of them.
+    private var clearedByAudio: Set<Int> = []
     /// Lifts quiet recitation before the voice detector sees it — see `AutomaticGain`.
     private var gain = AutomaticGain()
     private var state: PipelineState = .idle
@@ -85,6 +91,7 @@ public actor RecitationPipeline {
         heardTokens = []
         tajweedNotes = []
         tajweedCoverage = .none
+        clearedByAudio = []
         gain.reset()
         await components.vad.reset()
         transition(to: .starting)
@@ -127,6 +134,7 @@ public actor RecitationPipeline {
         segments = []
         tajweedNotes = []
         tajweedCoverage = .none
+        clearedByAudio = []
         await components.vad.reset()
         emit(.alignment(components.aligner.align(heard: [], against: newTarget, isFinal: false)))
     }
@@ -149,7 +157,9 @@ public actor RecitationPipeline {
             return
         }
 
-        let alignment = components.aligner.align(heard: heardTokens, against: target, isFinal: true)
+        let alignment = cleared(
+            components.aligner.align(heard: heardTokens, against: target, isFinal: true)
+        )
         emit(.alignment(alignment))
 
         // Already analysed segment by segment while listening; nothing more to compute.
@@ -211,8 +221,16 @@ public actor RecitationPipeline {
         )
         segments.append(aligned)
 
+        // Ask the audio about anything the matcher doubted in this segment. Only ever
+        // clears a doubt — see `PronunciationScorer`.
+        if let scorer = components.scorer {
+            clearedByAudio.formUnion(
+                await scorer.wordsSupportedByAudio(in: aligned, target: target)
+            )
+        }
+
         emit(.segment(aligned))
-        emit(.alignment(alignment))
+        emit(.alignment(cleared(alignment)))
 
         // Tajweed for the segment just heard. Per segment rather than over the whole
         // session each time: re-analysing everything on every segment would repeat the
@@ -228,6 +246,26 @@ public actor RecitationPipeline {
         if !notes.isEmpty || coverage.examined > 0 {
             emit(.tajweed(notes: tajweedNotes, coverage: coverage))
         }
+    }
+
+    /// Restore words the audio vouched for, leaving every other verdict alone.
+    private func cleared(_ alignment: AlignmentResult) -> AlignmentResult {
+        guard !clearedByAudio.isEmpty else { return alignment }
+        return AlignmentResult(
+            words: alignment.words.map { word in
+                guard clearedByAudio.contains(word.targetIndex), word.status.isMistake else { return word }
+                return WordEvaluation(
+                    targetIndex: word.targetIndex,
+                    reference: word.reference,
+                    expectedText: word.expectedText,
+                    status: .correct,
+                    timeRange: word.timeRange,
+                    recognizerConfidence: word.recognizerConfidence
+                )
+            },
+            insertions: alignment.insertions,
+            isFinal: alignment.isFinal
+        )
     }
 
     // MARK: - Plumbing

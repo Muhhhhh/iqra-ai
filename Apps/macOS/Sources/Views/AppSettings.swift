@@ -170,6 +170,17 @@ final class AppSettings {
     /// qalqalah and the nūn rules — and falls back to duration measurement otherwise.
     var analysesTajweedAudio: Bool = false
 
+    /// Ask the audio about words the matcher doubted, and clear the ones it supports.
+    ///
+    /// On by default when the model is installed: measured over nine passages it removes
+    /// a fifth of the falsely flagged words without costing any detection. It doubles
+    /// inference time — still around 25× faster than real time — and keeps the
+    /// pronunciation model resident.
+    var confirmsWordsWithAudio: Bool = true
+    /// The phoneme script the confirmation needs.
+    var locatedPhonemeScript: URL? { PhonemeScript.locate() }
+    var canConfirmWordsWithAudio: Bool { hasNeuralTajweed && locatedPhonemeScript != nil }
+
     /// The converted Muaalem package, if present.
     var locatedTajweedModel: URL? { MuaalemTajweedAnalyzer.locateModel() }
     /// The exported feature front-end the model needs.
@@ -299,8 +310,23 @@ final class AppSettings {
                 vad: makeVAD(),
                 recognizer: makeRecognizer(),
                 aligner: TokenAligner(options: alignmentOptions),
-                tajweed: makeTajweedAnalyzer()
+                tajweed: makeTajweedAnalyzer(),
+                scorer: makePronunciationScorer()
             )
+        )
+    }
+
+    private func makePronunciationScorer() -> PronunciationScorer? {
+        guard confirmsWordsWithAudio,
+              let model = locatedTajweedModel,
+              let frontend = locatedTajweedFrontend,
+              let scriptURL = locatedPhonemeScript,
+              let features = try? MuaalemFeatures(resourceURL: frontend),
+              let script = try? PhonemeScript(contentsOf: scriptURL)
+        else { return nil }
+        return PronunciationScorer(
+            model: MuaalemTajweedAnalyzer(modelURL: model, features: features),
+            script: script
         )
     }
 

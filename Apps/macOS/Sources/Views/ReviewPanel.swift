@@ -51,12 +51,26 @@ struct ReviewPanel: View {
                         }
                     }
 
+                    // Presented as something the recogniser heard, not as something the
+                    // reciter did. Measured on correct recitation, twelve of these appear
+                    // per 360 words, and inspecting them showed what they are: strings
+                    // like ٱلصُّحُّمِ and مهص, which are not words. For someone reciting a
+                    // known page, a genuinely inserted word almost always also occurs on
+                    // that page and is classified as going back over it — which leaves
+                    // this list holding mostly mis-hearings. There is no measured rate at
+                    // which it catches a real insertion, so it does not claim to.
                     let additions = model.insertions.filter { $0.kind == .addition }
                     if !additions.isEmpty {
-                        Section("Extra words heard") {
+                        Section {
                             ForEach(Array(additions.enumerated()), id: \.offset) { _, insertion in
                                 InsertionRow(insertion: insertion, words: model.words)
                             }
+                        } header: {
+                            Text("Sounds the recogniser could not place")
+                        } footer: {
+                            Text("Usually the recogniser mishearing rather than anything you added — it is right about roughly three words in five. Not counted as mistakes.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
 

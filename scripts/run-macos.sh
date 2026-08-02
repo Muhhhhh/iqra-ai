@@ -118,6 +118,14 @@ if [[ -f "$ROOT/Resources/muaalem-frontend.bin" ]]; then
   cp "$ROOT/Resources/muaalem-frontend.bin" "$APP/Contents/Resources/"
 fi
 
+# The phonetic script of every āyah: what the expected sounds are, for aligning the
+# recitation against. Without it, doubted words cannot be checked against the audio.
+if [[ -f "$ROOT/Resources/quran-phonemes.bin" ]]; then
+  cp -c "$ROOT/Resources/quran-phonemes.bin" "$APP/Contents/Resources/" 2>/dev/null \
+    || cp "$ROOT/Resources/quran-phonemes.bin" "$APP/Contents/Resources/"
+  echo "==> Bundling phoneme script ($(du -h "$ROOT/Resources/quran-phonemes.bin" | cut -f1))"
+fi
+
 # The Quran database. Without it the app has no text to practise against.
 if [[ -f "$ROOT/Resources/quran.sqlite3" ]]; then
   cp -c "$ROOT/Resources/quran.sqlite3" "$APP/Contents/Resources/" 2>/dev/null \
