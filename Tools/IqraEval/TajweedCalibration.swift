@@ -110,6 +110,17 @@ enum TajweedCalibration {
             features: try MuaalemFeatures(resourceURL: frontend)
         )
 
+        if let expected = arguments.forcedAlignPhonemes {
+            try await forcedAlign(
+                phonemes: expected,
+                reference: arguments.forcedAlignVerse,
+                reciter: reciter,
+                analyzer: analyzer,
+                vocabularyPath: arguments.phonemeVocabularyPath
+            )
+            return
+        }
+
         if arguments.dumpTajweedOutput {
             let library2 = ReciterAudioLibrary()
             let url = try await library2.fetch(VerseReference(surah: 36, ayah: 1), reciter: reciter)
@@ -366,6 +377,76 @@ enum TajweedCalibration {
         }
         return best
     }
+
+    // MARK: - Forced alignment
+
+    /// Align one āyah's known phoneme sequence to its audio, and report what came out.
+    ///
+    /// The point is not the numbers but whether the idea holds: that the phoneme head,
+    /// constrained to the sequence the reciter is supposed to be saying, can say *when*
+    /// each letter was said. That is the missing piece — tajweed cannot be judged letter
+    /// by letter without it.
+    static func forcedAlign(
+        phonemes expected: String,
+        reference: VerseReference,
+        reciter: Reciter,
+        analyzer: MuaalemTajweedAnalyzer,
+        vocabularyPath: String
+    ) async throws {
+        guard let data = FileManager.default.contents(atPath: vocabularyPath),
+              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let table = json["phonemes"] as? [String: Int]
+        else {
+            throw IqraEval.EvalError.missing("phoneme vocabulary at \(vocabularyPath)")
+        }
+
+        let library = ReciterAudioLibrary()
+        let url = try await library.fetch(reference, reciter: reciter)
+        let audio = try AudioFileLoader.load(url: url)
+        let observed = try await analyzer.probabilities(for: audio)
+        guard let series = observed.probabilities["phonemes"] else {
+            throw IqraEval.EvalError.missing("phonemes head in the model output")
+        }
+
+        // Spaces separate words; they are not symbols the model emits.
+        let words = expected.split(separator: " ").map(String.init)
+        var target: [Int] = []
+        var wordOfSymbol: [Int] = []
+        for (wordIndex, word) in words.enumerated() {
+            // Scalars, not Characters: قُ is a single Swift Character but two symbols in
+            // the model's vocabulary, and every piece of Arabic handling in this project
+            // that forgot that has been wrong.
+            for scalar in word.unicodeScalars {
+                guard let id = table[String(scalar)] else {
+                    throw IqraEval.EvalError.missing("symbol '\(scalar)' in the vocabulary")
+                }
+                target.append(id)
+                wordOfSymbol.append(wordIndex)
+            }
+        }
+
+        print("Forced alignment of \(reference)")
+        print("  \(target.count) phonemes in \(words.count) words, \(series.count) frames of audio")
+        print("")
+
+        let spans = try CTCForcedAligner().align(probabilities: series, target: target)
+        let confident = spans.count { $0.confidence >= 0.5 }
+        print("  aligned            \(spans.count)/\(target.count) phonemes")
+        print("  confident          \(confident) (\(pct(Double(confident) / Double(max(spans.count, 1)))) at 50% or better)")
+        print("")
+        print("  word boundaries recovered from the alignment:")
+        for wordIndex in 0..<words.count {
+            let mine = spans.filter { wordOfSymbol[$0.index] == wordIndex }
+            guard let first = mine.first, let last = mine.last else { continue }
+            let start = observed.startTime + Double(first.frames.lowerBound) * observed.frameDuration
+            let end = observed.startTime + Double(last.frames.upperBound) * observed.frameDuration
+            let mean = mine.map(\.confidence).reduce(0, +) / Double(mine.count)
+            print("    \(words[wordIndex].padding(toLength: 18, withPad: " ", startingAt: 0)) "
+                  + "\(format(start, 2))s – \(format(end, 2))s   confidence \(pct(mean))")
+        }
+    }
+
+    static func format(_ value: Double, _ places: Int) -> String { IqraEval.format(value, places) }
 
     // MARK: - Negatives
 

@@ -916,6 +916,12 @@ struct Arguments {
     var tajweedNegatives = false
     /// Remove the whole word rather than just the spike.
     var tajweedRemoveWholeWord = false
+    /// Expected phoneme sequence to force-align, words separated by spaces.
+    var forcedAlignPhonemes: String?
+    var forcedAlignVerse = VerseReference(surah: 112, ayah: 1)
+    var phonemeVocabularyPath = NSString(string:
+        "~/.cache/huggingface/hub/models--obadx--muaalem-model-v3_2/snapshots/01a1ef9fbe40d144ef845101e89ff924aed3fef5/vocab.json"
+    ).expandingTildeInPath
     /// Frames of evidence required, matching the analyzer's own minimum.
     var minimumFrames = 3
     var verbose = false
@@ -965,6 +971,11 @@ struct Arguments {
             case "--dump-tajweed-output": dumpTajweedOutput = true
             case "--tajweed-negatives": tajweedNegatives = true
             case "--remove-whole-word": tajweedRemoveWholeWord = true
+            case "--phonemes": forcedAlignPhonemes = next()
+            case "--phoneme-vocab": phonemeVocabularyPath = next() ?? phonemeVocabularyPath
+            case "--verse":
+                let parts = (next() ?? "").split(separator: ":").compactMap { Int($0) }
+                if parts.count == 2 { forcedAlignVerse = VerseReference(surah: parts[0], ayah: parts[1]) }
             case "--minimum-frames": minimumFrames = next().flatMap { Int($0) } ?? minimumFrames
             case "--verbose": verbose = true
             case "-h", "--help": wantsHelp = true
