@@ -77,7 +77,8 @@ struct ContentView: View {
                     get: { CGFloat(settings.pageZoom) },
                     set: { settings.pageZoom = Double($0) }
                 ),
-                tajweed: settings.showsTajweed ? library.tajweedByWord : [:],
+                tajweed: settings.showsTajweed ? library.tajweedSpansByWord : [:],
+                prefersCalligraphy: settings.prefersCalligraphicPage,
                 onSelectWord: { word in
                     Task { await showTranslation(for: word) }
                 }

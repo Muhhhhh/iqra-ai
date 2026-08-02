@@ -115,13 +115,19 @@ final class QuranLibrary {
     /// Derived from the Uthmani text, so it is available before a single word is recited
     /// — this half of tajweed does not depend on the audio at all.
     private(set) var tajweedByWord: [Int: TajweedRule] = [:]
+    /// Where each rule falls inside its word, so the page can colour the letters the
+    /// rule actually applies to rather than the whole word.
+    private(set) var tajweedSpansByWord: [Int: [TajweedOccurrence]] = [:]
 
     private func loadTajweed(for target: RecitationTarget) {
         var byWord: [Int: [TajweedRule]] = [:]
+        var spans: [Int: [TajweedOccurrence]] = [:]
         for occurrence in TajweedRuleDetector.occurrences(in: target) {
             byWord[occurrence.targetIndex, default: []].append(occurrence.rule)
+            spans[occurrence.targetIndex, default: []].append(occurrence)
         }
         tajweedByWord = byWord.compactMapValues { TajweedStyle.dominant($0) }
+        tajweedSpansByWord = spans
     }
 
     /// The recitation target for the open page.

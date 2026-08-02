@@ -31,8 +31,14 @@ public struct MushafPageLayout {
 
 @MainActor
 public enum MushafPageLayoutCache {
-    /// Pages are immutable for a given number, so the entry never goes stale.
-    private static var entries: [Int: MushafPageLayout] = [:]
+    /// Pages are immutable for a given number, so the entry never goes stale. The
+    /// rendering choice is part of the key: the two modes measure differently, and
+    /// serving one's layout to the other overflows the page.
+    private struct Key: Hashable {
+        let page: Int
+        let calligraphic: Bool
+    }
+    private static var entries: [Key: MushafPageLayout] = [:]
 
     public static func layout(
         for page: MushafPage,
@@ -40,12 +46,15 @@ public enum MushafPageLayoutCache {
         baseFontSize: CGFloat,
         naskhSpacingRatio: CGFloat,
         calligraphicSpacingRatio: CGFloat,
-        bookFontSize: CGFloat
+        bookFontSize: CGFloat,
+        prefersCalligraphy: Bool = true
     ) -> MushafPageLayout {
-        if let cached = entries[page.number] { return cached }
+        let key = Key(page: page.number, calligraphic: prefersCalligraphy)
+        if let cached = entries[key] { return cached }
 
         let hasCodes = page.lines.contains { line in line.words.contains { !$0.code.isEmpty } }
-        let calligraphic = hasCodes && !page.recitedWords.isEmpty && QCFFont.register(page: page.number)
+        let calligraphic = prefersCalligraphy && hasCodes
+            && !page.recitedWords.isEmpty && QCFFont.register(page: page.number)
 
         let layout: MushafPageLayout
         if calligraphic {
@@ -79,7 +88,7 @@ public enum MushafPageLayoutCache {
             )
         }
 
-        entries[page.number] = layout
+        entries[key] = layout
         return layout
     }
 }
@@ -95,8 +104,17 @@ public struct MushafPageView: View {
     private let surahNames: [Int: String]
     @Binding private var selection: Int?
     private let onSelectWord: (MushafWord) -> Void
-    /// Dominant tajweed rule per target word, when the tajweed overlay is on.
-    private let tajweed: [Int: TajweedRule]
+    /// Where each tajweed rule falls, per target word, when the overlay is on.
+    ///
+    /// Positions, not one rule per word: a rule applies to particular letters — the
+    /// nūn of a ghunnah, the qāf of a qalqalah — and tinting the whole word says
+    /// something about the other letters that is not true.
+    private let tajweed: [Int: [TajweedOccurrence]]
+    /// Set the page in Uthman Taha's calligraphy when it is available.
+    ///
+    /// Turning this off falls back to Unicode text, which is the only way to colour
+    /// tajweed letter by letter — see `MushafWordView`.
+    private let prefersCalligraphy: Bool
     /// Multiplier on the fit-to-window size. 1 fills the available area; above that the
     /// page overflows and the view scrolls.
     @Binding private var zoom: CGFloat
@@ -112,11 +130,13 @@ public struct MushafPageView: View {
         surahNames: [Int: String] = [:],
         selection: Binding<Int?> = .constant(nil),
         zoom: Binding<CGFloat> = .constant(1),
-        tajweed: [Int: TajweedRule] = [:],
+        tajweed: [Int: [TajweedOccurrence]] = [:],
+        prefersCalligraphy: Bool = true,
         onSelectWord: @escaping (MushafWord) -> Void = { _ in }
     ) {
         self._zoom = zoom
         self.tajweed = tajweed
+        self.prefersCalligraphy = prefersCalligraphy
         self.page = page
         self.evaluations = Dictionary(
             words.map { ($0.targetIndex, $0) },
@@ -148,7 +168,8 @@ public struct MushafPageView: View {
             baseFontSize: Self.baseFontSize,
             naskhSpacingRatio: Self.minimumSpacingRatio,
             calligraphicSpacingRatio: Self.calligraphicSpacingRatio,
-            bookFontSize: Self.bookFontSize
+            bookFontSize: Self.bookFontSize,
+            prefersCalligraphy: prefersCalligraphy
         )
     }
 
@@ -309,7 +330,9 @@ public struct MushafPageView: View {
                 fontSize: fontSize,
                 font: layout.wordFont,
                 displayText: layout.usesCalligraphy && !word.code.isEmpty ? word.code : word.text,
-                tajweed: word.targetIndex.flatMap { tajweed[$0] },
+                sourceText: word.text,
+                isCalligraphic: layout.usesCalligraphy && !word.code.isEmpty,
+                tajweed: word.targetIndex.flatMap { tajweed[$0] } ?? [],
                 isSelected: word.targetIndex != nil && selection == word.targetIndex
             ) {
                 if let index = word.targetIndex {
@@ -331,29 +354,67 @@ private struct MushafWordView: View {
     /// The glyph codes when the page is set in the calligraphic font, otherwise the
     /// Unicode text. Matching always uses `word.text`; only display switches.
     let displayText: String
-    /// Tajweed rule to tint this word by, when the overlay is on.
+    /// The Unicode text regardless of how the word is drawn — tajweed ranges index
+    /// into this.
+    let sourceText: String
+    /// True when `displayText` is a QCF glyph code rather than readable text.
+    let isCalligraphic: Bool
+    /// Where each rule falls inside `sourceText`, as scalar ranges.
     ///
-    /// The whole word is tinted rather than the exact letters: the QCF glyph codes do not
-    /// map one-to-one onto Unicode scalars, so the character ranges the detector produces
-    /// cannot address the calligraphy. Tinting the word is honest about that.
-    let tajweed: TajweedRule?
+    /// A tajweed rule belongs to particular letters — the nūn that carries the ghunnah,
+    /// the qāf that is echoed in qalqalah — and colouring the whole word claims the rule
+    /// applies to letters it does not. So the letters are coloured, not the word.
+    ///
+    /// This is only possible when the page is set in Unicode text. In the calligraphic
+    /// fonts an entire word is a **single glyph** — رَّسُولٍ is the one character ﮙ — so
+    /// there is no letter to address and no sub-glyph position to colour. Rather than
+    /// fall back to tinting the whole word, which would be the inaccurate thing this is
+    /// meant to stop, the calligraphic page shows no tajweed colour at all; the setting
+    /// that chooses between the two says so.
+    let tajweed: [TajweedOccurrence]
     let isSelected: Bool
     let onTap: () -> Void
 
     /// A verdict about what was recited always outranks a tajweed tint: being told a
     /// word was wrong matters more than being shown which rule it carries.
-    private var colour: Color {
+    private var showsTajweed: Bool {
+        guard !isCalligraphic, !tajweed.isEmpty else { return false }
         switch status {
-        case .wrong, .skipped:
-            return WordStatusStyle.foreground(for: status)
-        case .correct, .uncertain, .notYetRecited:
-            if let tajweed { return TajweedStyle.colour(for: tajweed) }
-            return WordStatusStyle.foreground(for: status)
+        case .wrong, .skipped: return false
+        case .correct, .uncertain, .notYetRecited: return true
         }
     }
 
+    private var colour: Color {
+        WordStatusStyle.foreground(for: status)
+    }
+
+    /// The word with each rule's own letters tinted, everything else left alone.
+    private var attributed: AttributedString {
+        var result = AttributedString(sourceText)
+        let scalars = Array(sourceText.unicodeScalars)
+        for occurrence in tajweed {
+            let lower = max(0, min(occurrence.range.lowerBound, scalars.count))
+            let upper = max(lower, min(occurrence.range.upperBound, scalars.count))
+            guard lower < upper else { continue }
+            // Scalar offsets from the detector, converted to the string's own indices.
+            let start = sourceText.unicodeScalars.index(sourceText.unicodeScalars.startIndex, offsetBy: lower)
+            let end = sourceText.unicodeScalars.index(sourceText.unicodeScalars.startIndex, offsetBy: upper)
+            guard let from = AttributedString.Index(start, within: result),
+                  let to = AttributedString.Index(end, within: result) else { continue }
+            result[from..<to].foregroundColor = TajweedStyle.colour(for: occurrence.rule)
+        }
+        return result
+    }
+
     var body: some View {
-        Text(displayText)
+        Group {
+            if showsTajweed {
+                Text(attributed)
+            } else {
+                Text(displayText)
+            }
+        }
             .font(font)
             .foregroundStyle(colour.opacity(WordStatusStyle.opacity(for: status)))
             .overlay(alignment: .bottom) {
@@ -361,7 +422,10 @@ private struct MushafWordView: View {
                     Capsule()
                         .fill(colour)
                         .frame(height: max(1.5, fontSize * 0.04))
-                        .offset(y: fontSize * 0.12)
+                        // Close under the word: the Uthmani text hangs marks well below
+                        // the baseline, and a rule sitting under those reads as
+                        // belonging to the line beneath rather than to this word.
+                        .offset(y: fontSize * 0.02)
                 }
             }
             .background {

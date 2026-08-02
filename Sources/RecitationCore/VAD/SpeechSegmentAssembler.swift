@@ -37,6 +37,14 @@ public struct SpeechSegmentAssembler {
         /// Segments shorter than this are treated as noise and dropped.
         public var minimumSegmentDuration: TimeInterval
         /// Hard cap so a continuous passage still gets transcribed incrementally.
+        ///
+        /// Whisper's native window is 30 s, so anything below that is a self-imposed cut
+        /// mid-phrase at an arbitrary point. Measured over nine passages of Al-Baqarah,
+        /// An-Nisā' and Al-A'rāf, raising the cap from 12 s to 20 s took word error rate
+        /// from 54.8% to 53.3% and falsely flagged words from 29.2% to 28.9%; 30 s gained
+        /// nothing further, because almost no segment runs that long once a 1.6 s pause
+        /// closes it. 20 s it is — a small win, and the reason it is small is that only
+        /// 18 of 169 segments were hitting the cap at all.
         public var maximumSegmentDuration: TimeInterval
         /// How much audio from *before* the speech decision to prepend.
         ///
@@ -50,7 +58,7 @@ public struct SpeechSegmentAssembler {
         public init(
             trailingSilence: TimeInterval = 1.6,
             minimumSegmentDuration: TimeInterval = 0.35,
-            maximumSegmentDuration: TimeInterval = 12.0,
+            maximumSegmentDuration: TimeInterval = 20.0,
             preRoll: TimeInterval = 0.35
         ) {
             self.trailingSilence = trailingSilence

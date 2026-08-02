@@ -62,6 +62,16 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         /// recovers alignment from attention, which the fine-tune preserves. v2 tajweed
         /// measures durations over these boundaries, so their quality is not cosmetic.
         public var useDTWTimestamps: Bool
+        /// Which attention heads DTW reads alignment from.
+        ///
+        /// **Must match the weights.** The heads are model-specific, and whisper.cpp has
+        /// no way to check: pointed at the wrong ones it does not fail, it produces
+        /// timings that are simply wrong. The `minimumTimedTokenFraction` guard then sees
+        /// words with no duration, concludes the audio was never speech, and discards the
+        /// whole transcription. Measured: large-v3-turbo with the base preset returned
+        /// nothing at all for 169 of 169 segments, which reads exactly like a model that
+        /// cannot transcribe Quranic recitation.
+        public var alignmentHeads: AlignmentHeads
 
         public init(
             threadCount: Int = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)),
@@ -71,7 +81,8 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             suppressNonSpeechTokens: Bool = true,
             silenceFloor: Float = 0.005,
             minimumTimedTokenFraction: Double = 0.25,
-            useDTWTimestamps: Bool = true
+            useDTWTimestamps: Bool = true,
+            alignmentHeads: AlignmentHeads = .base
         ) {
             self.threadCount = threadCount
             self.language = language
@@ -81,6 +92,7 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             self.silenceFloor = silenceFloor
             self.minimumTimedTokenFraction = minimumTimedTokenFraction
             self.useDTWTimestamps = useDTWTimestamps
+            self.alignmentHeads = alignmentHeads
         }
 
         public static let `default` = Options()
@@ -142,7 +154,7 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             params.dtw_token_timestamps = true
             // The alignment-head preset must match the architecture, not the fine-tune:
             // Tarteel's model is Whisper base with retrained weights, so BASE is correct.
-            params.dtw_aheads_preset = WHISPER_AHEADS_BASE
+            params.dtw_aheads_preset = options.alignmentHeads.preset
             // whisper.cpp silently disables DTW when flash attention is on — it needs the
             // cross-attention weights that flash attention never materialises. It logs
             // "dtw_token_timestamps is not supported with flash_attn - disabling" and

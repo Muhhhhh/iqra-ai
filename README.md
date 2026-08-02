@@ -223,6 +223,54 @@ blind to a spelling ambiguity affecting **11% of the Quran** (9,301 words) — a
 user reported from the app before any measurement here caught it. An eval set that does
 not contain the failure cannot measure the fix.
 
+### What the errors are, and what does not fix them
+
+Aggregate word error rate cannot tell "the model misheard every other word" from "whole
+stretches never reached it", and those call for opposite fixes. The breakdown, over nine
+passages of Al-Baqarah, An-Nisā' and Al-A'rāf:
+
+| | share of errors |
+|---|---|
+| substitutions — misheard | 49% |
+| **deletions — never transcribed at all** | **45%** |
+| insertions — invented | 5% |
+
+Nearly half the loss is words the recogniser never produced. That is the thing to fix,
+and it is why most of the ideas below did not help: they address how well words are
+matched, not whether they arrive.
+
+Five changes were measured. Two were kept:
+
+- **Segment length cap 12 s → 20 s.** Whisper's native window is 30 s, so a shorter cap
+  is a self-imposed cut mid-phrase. WER 54.8% → 53.3%, falsely flagged words 29.2% →
+  28.9%. 30 s gained nothing further: with a 1.6 s pause closing segments, almost none
+  run that long.
+- **DTW alignment heads must match the weights.** They were hardcoded to the base preset.
+  Pointed at the wrong heads whisper.cpp does not fail — it returns wrong timings, the
+  degenerate-timing guard concludes the audio was never speech, and the whole
+  transcription is discarded. large-v3-turbo returned **nothing at all for 169 of 169
+  segments**, which reads exactly like a model that cannot transcribe recitation. This
+  broke every model size except base, which is precisely what the model picker offers.
+
+Three were measured and rejected:
+
+- **A bigger model.** Stock `small` (69.7% WER), `medium` (62.4%) and `large-v3-turbo`
+  (56.5%) are all *worse* than the 74M-parameter Quran-tuned base at 54.8% — which also
+  runs 20× faster. Fine-tuning on recitation matters more than parameter count. A larger
+  *Quran-tuned* checkpoint would be worth having; a larger general one is not.
+- **Unquantised weights.** fp16 against q8_0: 54.8% WER and 28.9% false flags, identical
+  to three decimal places. Quantisation costs nothing here, so the smaller file stays.
+- **Phonetic edit distance.** Charging ت/ط, س/ص, ذ/ز/ظ, ق/ك, ء/ع half a substitution,
+  on the theory that these are recogniser confusions rather than misrecitations, changed
+  the false-flag rate by nothing at all (28.89% → 28.89%) and slightly increased invented
+  additions. At 55% WER the mismatches are not near-misses. Worth re-testing if
+  transcription ever improves; not worth the loss of ص/س sensitivity now.
+- **N-best rescoring.** Decoding each segment several ways and letting the expected text
+  pick between them — the safe way to use the known text, since every hypothesis is one
+  the audio actually produced. WER barely moved (57.8% → 57.4%), false flags got *worse*
+  (28.9% → 32.5%), and it cost 4× the compute. Available in the harness as `--nbest` for
+  re-testing.
+
 **These numbers are not good.** One word in nine is still falsely flagged on short
 surahs, one in three on long ones, and only about a third of short clean passages come
 back completely unmarked. That is the honest state of word

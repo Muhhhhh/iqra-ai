@@ -153,9 +153,17 @@ final class AppSettings {
     /// Turn to the next page automatically when the reciter reaches the end of this one,
     /// so a long recitation does not have to be interrupted to click.
     var autoTurnPage: Bool = true
-    /// Tint each word by the tajweed rule it carries. Derived from the text, so this is
-    /// reliable regardless of what was recited.
+    /// Colour the letters each tajweed rule applies to. Derived from the text, so this
+    /// is reliable regardless of what was recited.
     var showsTajweed: Bool = true
+    /// Set the page in Uthman Taha's calligraphy.
+    ///
+    /// The trade is not cosmetic. In the QCF fonts a whole word is a single glyph, so
+    /// there is no letter to colour — tajweed colouring is only possible on the Unicode
+    /// setting. Colouring the entire word instead would say the rule applies to letters
+    /// that do not carry it, which is the inaccuracy the per-letter colouring exists to
+    /// remove.
+    var prefersCalligraphicPage: Bool = true
     /// Check tajweed against the recitation.
     ///
     /// Uses the Muaalem model when it is installed — that is what can judge ghunnah,
@@ -318,7 +326,12 @@ final class AppSettings {
         if let cachedRecognizer { return cachedRecognizer }
         let recognizer = WhisperSpeechRecognizer(
             modelURL: located.url,
-            options: .init(beamSize: beamSize)
+            options: .init(
+                beamSize: beamSize,
+                // Must follow the weights, or word timings come out wrong and the
+                // degenerate-timing guard throws away whole transcriptions.
+                alignmentHeads: .matching(modelSize)
+            )
         )
         cachedRecognizer = recognizer
         return recognizer

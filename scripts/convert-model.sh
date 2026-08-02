@@ -31,9 +31,13 @@ VENV="$ROOT/.venv"
 QUANT_TYPE="q8_0"
 
 SKIP_COREML=0
+KEEP_F16=0
 for arg in "$@"; do
   case "$arg" in
     --skip-coreml) SKIP_COREML=1 ;;
+    # Keep the unquantised fp16 weights alongside the quantised ones, so the cost of
+    # quantisation can be measured rather than assumed.
+    --keep-f16) KEEP_F16=1 ;;
     --clean) echo "==> Cleaning"; rm -rf "$WORK_DIR" "$ROOT/Models/ggml-${MODEL_NAME}"* ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
@@ -124,6 +128,11 @@ if [[ ! -x "$QUANT_BIN" ]]; then
     -DWHISPER_BUILD_EXAMPLES=ON -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF \
     -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON >/dev/null 2>&1
   cmake --build "$WHISPER_DIR/build-tools" --target whisper-quantize -j"$(sysctl -n hw.ncpu)" >/dev/null
+fi
+
+if [[ "${KEEP_F16:-0}" == "1" ]]; then
+  cp "$WORK_DIR/ggml-model.bin" "$ROOT/Models/ggml-${MODEL_NAME}-f16.bin"
+  echo "==> Kept unquantised weights: Models/ggml-${MODEL_NAME}-f16.bin ($(du -h "$ROOT/Models/ggml-${MODEL_NAME}-f16.bin" | cut -f1))"
 fi
 
 echo "==> Quantising to $QUANT_TYPE"

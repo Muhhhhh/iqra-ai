@@ -21,6 +21,12 @@ public enum SpeechModelLocator {
             case appBundle
             case developmentDirectory
         }
+
+        public init(url: URL, source: Source, hasCoreMLEncoder: Bool) {
+            self.url = url
+            self.source = source
+            self.hasCoreMLEncoder = hasCoreMLEncoder
+        }
     }
 
     /// Search for the weights described by `configuration`.

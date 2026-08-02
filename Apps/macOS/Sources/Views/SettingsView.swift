@@ -225,11 +225,28 @@ private struct TajweedSettings: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Colour words by tajweed rule", isOn: $settings.showsTajweed)
-                Text("Where a rule applies follows from the Uthmani text, so this is exact and does not depend on your recitation. Each word takes the colour of the strongest rule it carries.")
+                Toggle("Colour tajweed letters", isOn: $settings.showsTajweed)
+                Text("Where a rule applies follows from the Uthmani text, so this is exact and does not depend on your recitation. Only the letters the rule falls on are coloured — the nūn that carries a ghunnah, the qāf that is echoed in qalqalah — not the whole word around them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Picker("Page is set in", selection: $settings.prefersCalligraphicPage) {
+                    Text("Uthman Taha's calligraphy").tag(true)
+                    Text("Unicode text").tag(false)
+                }
+                .pickerStyle(.inline)
+
+                if settings.showsTajweed && settings.prefersCalligraphicPage {
+                    Label(
+                        "The calligraphic fonts draw a whole word as one glyph — رَّسُولٍ is the single character ﮙ — so there are no letters to colour, and the page shows no tajweed colour. Switch to Unicode text to see it. Colouring the entire word instead would claim the rule applies to letters that do not carry it.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
                 TajweedLegend()
                     .padding(.top, 4)
             } header: {
