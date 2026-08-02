@@ -9,8 +9,30 @@ import Foundation
 public struct SpeechSegmentAssembler {
 
     public struct Options: Sendable {
-        /// Silence needed before a segment is closed. Recitation pauses at āyah ends are
-        /// meaningful, so this is generous.
+        /// Silence needed before a segment is closed.
+        ///
+        /// This is the single most consequential number in the pipeline, and 0.6 s — the
+        /// value carried over from the microphone work — was badly wrong for recitation.
+        /// Reciters pause constantly: at waqf marks, between āyāt, for breath. Every one
+        /// of those pauses was closing a segment, and whisper is far worse on short
+        /// fragments than on long ones, because it has no context to decode against.
+        ///
+        /// Measured with `Tools/IqraEval` over 74 passages of Al-Husary's murattal
+        /// (real recitation, not the synthetic clip earlier figures came from):
+        ///
+        ///     silence   WER     falsely flagged words   passages with nothing flagged
+        ///     0.6 s     57.6%   23.9%                   1/19
+        ///     0.9 s     50.1%   16.7%                   3/19
+        ///     1.2 s     45.6%   13.8%                   3/19
+        ///     1.6 s     43.0%   10.9%                   7/19
+        ///     2.0 s     39.3%   11.7%                   8/19
+        ///     2.5 s     37.5%   10.5%                   7/19
+        ///
+        /// Falsely flagged words more than halved. Detection of an omitted āyah rose
+        /// with it (8/19 → 15/19) rather than trading against it, because both failures
+        /// had the same cause: fragments too short to transcribe. Past 1.6 s the curve
+        /// flattens into noise, so that is the setting — every further tenth of a second
+        /// is feedback the reciter waits for after they stop.
         public var trailingSilence: TimeInterval
         /// Segments shorter than this are treated as noise and dropped.
         public var minimumSegmentDuration: TimeInterval
@@ -26,7 +48,7 @@ public struct SpeechSegmentAssembler {
         public var preRoll: TimeInterval
 
         public init(
-            trailingSilence: TimeInterval = 0.6,
+            trailingSilence: TimeInterval = 1.6,
             minimumSegmentDuration: TimeInterval = 0.35,
             maximumSegmentDuration: TimeInterval = 12.0,
             preRoll: TimeInterval = 0.35

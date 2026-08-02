@@ -61,6 +61,13 @@ let package = Package(
             path: "Apps/macOS/Sources",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        // Offline accuracy measurement against real recitation. Not part of the app.
+        .executableTarget(
+            name: "IqraEval",
+            dependencies: ["RecitationCore"],
+            path: "Tools/IqraEval",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
         .testTarget(
             name: "RecitationCoreTests",
             dependencies: ["RecitationCore"],

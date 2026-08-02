@@ -169,6 +169,54 @@ Silero's threshold defaults to 0.35 rather than its usual 0.5, for the same reas
 cost is asymmetric. Letting a little extra audio through costs milliseconds of inference;
 clipping a word fabricates a mistake.
 
+**Segments must be long enough to decode.** `trailingSilence` defaults to 1.6 s, not the
+0.6 s carried over from the microphone work. Reciters pause constantly — at waqf marks,
+between āyāt, for breath — and every one of those pauses was closing a segment. Whisper
+is much worse on short fragments, because it has no context to decode against. This was
+the largest single accuracy defect in the pipeline, and it was invisible until anything
+was measured on real recitation. See below.
+
+## Measuring against real recitation
+
+Until `Tools/IqraEval` existed, every accuracy figure here came from one synthetic TTS
+clip — no madd, no tajweed, no melodic line, no breath pauses. It is not the signal the
+app receives, and it flattered the pipeline badly.
+
+The harness uses reference recitations from everyayah.com, whose text is known exactly
+from the bundled database: 6,236 aligned audio/text pairs, no labelling. Mistakes are
+introduced by splicing whole āyāt, which needs no word boundaries in the reference audio
+and so adds no alignment assumptions of its own:
+
+| case | audio | what it proves |
+|---|---|---|
+| clean | three āyāt straight through | anything flagged is a **false alarm** |
+| skip | middle āyah removed | an omission with recitation on both sides is caught |
+| wrong | middle āyah replaced with another | reading the wrong text is caught |
+| repeat | middle āyah recited twice | self-correction is not reported as added words |
+
+```bash
+swift build -c release --product IqraEval && .build/release/IqraEval --trailing-silence 0.6,1.6
+```
+
+The false-flag rate is the number that governs this app: a pipeline that catches
+everything by flagging everything is worse than useless, so detection rates are never
+reported without it alongside. Measured over 74 passages of Al-Husary's murattal:
+
+| trailing silence | WER | falsely flagged words | clean passages, nothing flagged | omitted āyah caught |
+|---|---|---|---|---|
+| 0.6 s | 57.6% | 23.9% | 1/19 | 8/19 |
+| 1.6 s | 43.0% | 10.9% | 7/19 | 15/19 |
+| 2.5 s | 37.5% | 10.5% | 7/19 | 13/19 |
+
+Detection improved *with* the false-flag rate rather than against it, because both
+failures had one cause: fragments too short to transcribe. Past 1.6 s the curve flattens,
+and every further tenth of a second is feedback the reciter waits for after they stop.
+
+**These numbers are not good.** One word in nine is still falsely flagged, and only about
+a third of clean passages come back completely unmarked. That is the honest state of word
+matching on real recitation, and it is why the app's language is "check this" rather than
+"wrong", and why the muṣḥaf never presents a verdict as final.
+
 ## The muṣḥaf view
 
 The page is the real Madani layout: 604 pages, fifteen lines, **canonical line breaks** —

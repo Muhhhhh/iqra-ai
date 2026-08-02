@@ -101,8 +101,8 @@ private struct AudioSettings: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Slider(value: $settings.vadTrailingSilence, in: 0.2...2.0)
-                Text("A segment closes after \(settings.vadTrailingSilence, format: .number.precision(.fractionLength(2)))s of silence.")
+                Slider(value: $settings.vadTrailingSilence, in: 0.2...3.0)
+                Text("A segment closes after \(settings.vadTrailingSilence, format: .number.precision(.fractionLength(2)))s of silence. Shorter means quicker feedback; measured on real recitation, it also means markedly more words falsely flagged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
