@@ -38,6 +38,11 @@ public actor RecitationPipeline {
     /// against the full history, not per segment, so a word skipped early can still be
     /// re-explained once more context arrives.
     private var heardTokens: [TranscribedToken] = []
+    /// Tajweed findings so far. Accumulated as segments arrive rather than computed once
+    /// at the end: a reciter watching the page should see the check happening, and
+    /// "nothing found yet" must not be presented as "nothing found".
+    private var tajweedNotes: [TajweedNote] = []
+    private var tajweedCoverage: TajweedCoverage = .none
     private var state: PipelineState = .idle
     private var captureTask: Task<Void, Never>?
     private var continuation: AsyncStream<PipelineEvent>.Continuation?
@@ -76,6 +81,8 @@ public actor RecitationPipeline {
         self.target = target
         segments = []
         heardTokens = []
+        tajweedNotes = []
+        tajweedCoverage = .none
         await components.vad.reset()
         transition(to: .starting)
 
@@ -115,6 +122,8 @@ public actor RecitationPipeline {
         target = newTarget
         heardTokens = []
         segments = []
+        tajweedNotes = []
+        tajweedCoverage = .none
         await components.vad.reset()
         emit(.alignment(components.aligner.align(heard: [], against: newTarget, isFinal: false)))
     }
@@ -140,8 +149,8 @@ public actor RecitationPipeline {
         let alignment = components.aligner.align(heard: heardTokens, against: target, isFinal: true)
         emit(.alignment(alignment))
 
-        // v1: no-op. The seam is live so v2 lands without touching the pipeline.
-        let notes = await components.tajweed.analyze(segments: segments, target: target)
+        // Already analysed segment by segment while listening; nothing more to compute.
+        let notes = tajweedNotes
 
         emit(.finished(
             RecitationResult(
@@ -149,7 +158,7 @@ public actor RecitationPipeline {
                 alignment: alignment,
                 segments: segments,
                 tajweedNotes: notes,
-                tajweedCoverage: await components.tajweed.coverage()
+                tajweedCoverage: tajweedCoverage
             )
         ))
         transition(to: .stopped)
@@ -197,6 +206,21 @@ public actor RecitationPipeline {
 
         emit(.segment(aligned))
         emit(.alignment(alignment))
+
+        // Tajweed for the segment just heard. Per segment rather than over the whole
+        // session each time: re-analysing everything on every segment would repeat the
+        // same inference over and over and grow quadratically with the recitation.
+        let notes = await components.tajweed.analyze(segments: [aligned], target: target)
+        var coverage = await components.tajweed.coverage()
+        tajweedNotes += notes
+        tajweedCoverage.required = coverage.required
+        tajweedCoverage.judgeable = coverage.judgeable
+        tajweedCoverage.examined += coverage.examined
+        tajweedCoverage.questioned = tajweedNotes.count
+        coverage = tajweedCoverage
+        if !notes.isEmpty || coverage.examined > 0 {
+            emit(.tajweed(notes: tajweedNotes, coverage: coverage))
+        }
     }
 
     // MARK: - Plumbing

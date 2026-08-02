@@ -311,7 +311,11 @@ final class AppSettings {
         if let model = locatedTajweedModel,
            let frontend = locatedTajweedFrontend,
            let features = try? MuaalemFeatures(resourceURL: frontend) {
-            return MuaalemTajweedAnalyzer(modelURL: model, features: features)
+            // Both halves: the model for the ṣifāt rules, duration for madd, which the
+            // model has no way to judge.
+            return CompositeTajweedAnalyzer(
+                neural: MuaalemTajweedAnalyzer(modelURL: model, features: features)
+            )
         }
         return DSPTajweedAnalyzer()
     }

@@ -346,8 +346,17 @@ private struct TajweedStatusRow: View {
             } else if model.segments.isEmpty && model.tajweedNotes.isEmpty {
                 row(
                     "Ready",
-                    detail: "\(judgeable) rules on this page could be checked, if every word is recognised. Results appear when you stop.",
+                    detail: "\(judgeable) rules on this page can be checked, as you recite.",
                     symbol: "waveform.badge.magnifyingglass"
+                )
+            } else if model.isRunning && model.tajweedCoverage.examined == 0 && model.tajweedNotes.isEmpty {
+                // Mid-recitation with nothing examined yet is not a finding. Saying
+                // "nothing was examined" here would present a check that has not run as
+                // one that ran and found nothing.
+                row(
+                    "Listening",
+                    detail: "Rules are checked as each phrase is recognised.",
+                    symbol: "waveform"
                 )
             } else {
                 // The count that matters is how many rules were actually looked at. A

@@ -224,6 +224,10 @@ public final class RecitationSessionModel {
             words = alignment.words
             insertions = alignment.insertions
 
+        case .tajweed(let notes, let coverage):
+            tajweedNotes = notes
+            tajweedCoverage = coverage
+
         case .finished(let result):
             words = result.alignment.words
             insertions = result.alignment.insertions

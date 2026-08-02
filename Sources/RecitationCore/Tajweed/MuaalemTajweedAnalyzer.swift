@@ -396,7 +396,7 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
     /// idghām and iqlāb produce no spike in a quarter of occurrences that a qārī recited
     /// correctly, which is a property of the model, not of the recitation.
     public static let audioVerifiable: Set<TajweedRule> = [
-        .ghunnah, .ikhfa, .qalqalah, .izhar, .idghamBilaGhunnah,
+        .ghunnah, .ikhfa, .qalqalah, .izhar, .idghamBilaGhunnah, .idgham, .iqlab,
     ]
 
     /// Rules whose sound is articulated across the boundary into the next word.

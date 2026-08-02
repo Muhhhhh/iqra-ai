@@ -22,6 +22,8 @@ public enum PipelineEvent: Sendable {
     case segment(AlignedAudioSegment)
     /// Updated verdicts for the whole target. `isFinal` is false while recording.
     case alignment(AlignmentResult)
+    /// Tajweed findings so far, with how much has been examined to produce them.
+    case tajweed(notes: [TajweedNote], coverage: TajweedCoverage)
     /// Terminal result, emitted once after `stop()`.
     case finished(RecitationResult)
     case failed(PipelineFailure)
