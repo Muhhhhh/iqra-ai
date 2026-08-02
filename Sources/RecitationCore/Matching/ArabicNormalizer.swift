@@ -70,6 +70,42 @@ public enum ArabicNormalizer {
         return result.trimmingCharacters(in: .whitespaces)
     }
 
+    /// The superscript (dagger) alef: a long ā the Uthmani text marks rather than writes.
+    static let daggerAlef = Unicode.Scalar(0x0670)!
+    private static let fullAlef = Unicode.Scalar(0x0627)!
+
+    /// Every spelling of a word that should be accepted as the same word.
+    ///
+    /// Only the dagger alef produces more than one, and it produces exactly two, because
+    /// modern orthography is genuinely inconsistent about it. The same mark is written
+    /// out as a full alef in some words and left out in others:
+    ///
+    ///     ءَايَٰت  → آيات      (written)
+    ///     سَمَٰوَٰت → سماوات    (written)
+    ///     هَٰذَا   → هذا       (not written)
+    ///     ذَٰلِكَ  → ذلك       (not written)
+    ///     ٱلرَّحْمَٰن → الرحمن   (usually not written, sometimes الرحمان)
+    ///
+    /// So there is no single fold that is right. Dropping the mark — which is what this
+    /// normaliser did — turns آيات into a mismatch; folding it to an alef turns هذا into
+    /// one. Either way the reciter is told they misread a word they read correctly.
+    ///
+    /// Both readings are therefore offered, and the matcher takes whichever fits what was
+    /// heard. The ambiguity is confined to words that actually carry the mark, so pairs
+    /// that differ by a *written* alef — قَالَ against قُل, which is a real difference
+    /// worth reporting — are untouched.
+    public static func matchingVariants(of text: String) -> [String] {
+        let canonical = normalize(text)
+        guard text.unicodeScalars.contains(daggerAlef) else { return [canonical] }
+
+        var realised = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            realised.append(scalar == daggerAlef ? fullAlef : scalar)
+        }
+        let spelled = normalize(String(realised))
+        return spelled == canonical ? [canonical] : [canonical, spelled]
+    }
+
     /// Normalize and split into word tokens, discarding empties.
     public static func tokenize(_ text: String) -> [String] {
         normalize(text)

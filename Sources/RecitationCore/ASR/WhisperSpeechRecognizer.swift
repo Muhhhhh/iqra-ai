@@ -258,7 +258,15 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         useDTW: Bool
     ) -> Transcription {
         struct Word {
-            var text: String
+            /// Raw token bytes, decoded only once the word is complete.
+            ///
+            /// whisper's vocabulary is byte-level BPE, so a single Arabic character —
+            /// three bytes in UTF-8 — is routinely split across two tokens. Decoding
+            /// each token to a `String` on its own turns both halves into U+FFFD
+            /// replacement characters, and the original bytes are gone: the word arrives
+            /// at the matcher as "ب\u{FFFD}\u{FFFD}يتنا", matches nothing, and is
+            /// reported as a mistake the reciter did not make.
+            var bytes: [UInt8]
             var emittedStart: TimeInterval
             var emittedEnd: TimeInterval
             /// DTW anchor, if the model produced one.
@@ -274,8 +282,13 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
         func flush() {
             guard var current = pending else { return }
             pending = nil
-            current.text = current.text.trimmingCharacters(in: .whitespaces)
-            guard !current.text.isEmpty else { return }
+            // Decode once, with every byte of the word present.
+            current.bytes = Array(
+                String(decoding: current.bytes, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespaces)
+                    .utf8
+            )
+            guard !current.bytes.isEmpty else { return }
             collected.append(current)
         }
 
@@ -298,8 +311,13 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
                 // Special tokens (timestamps, <|endoftext|>, language tags) carry no text.
                 if id >= whisper_token_eot(context) { continue }
                 guard let raw = whisper_full_get_token_text(context, segmentIndex, tokenIndex) else { continue }
-                let text = String(cString: raw)
-                if text.isEmpty { continue }
+                var tokenBytes: [UInt8] = []
+                var cursor = raw
+                while cursor.pointee != 0 {
+                    tokenBytes.append(UInt8(bitPattern: cursor.pointee))
+                    cursor += 1
+                }
+                if tokenBytes.isEmpty { continue }
 
                 let data = whisper_full_get_token_data(context, segmentIndex, tokenIndex)
                 // All whisper timings are centiseconds relative to the chunk.
@@ -309,17 +327,20 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
                     ? chunkStart + TimeInterval(data.t_dtw) / 100.0
                     : nil
 
-                if text.hasPrefix(" ") || pending == nil {
+                // A word boundary is a leading space. Space is ASCII, so testing the
+                // first byte is safe even mid-character — a continuation byte is never
+                // 0x20.
+                if tokenBytes.first == 0x20 || pending == nil {
                     flush()
                     pending = Word(
-                        text: text,
+                        bytes: tokenBytes,
                         emittedStart: start,
                         emittedEnd: end,
                         anchor: anchor,
                         probabilities: [Double(data.p)]
                     )
                 } else if var current = pending {
-                    current.text += text
+                    current.bytes.append(contentsOf: tokenBytes)
                     current.emittedEnd = max(current.emittedEnd, end)
                     current.probabilities.append(Double(data.p))
                     pending = current
@@ -354,7 +375,7 @@ public actor WhisperSpeechRecognizer: SpeechRecognizer {
             }
 
             return TranscribedToken(
-                text: word.text,
+                text: String(decoding: word.bytes, as: UTF8.self),
                 startTime: start,
                 endTime: end,
                 confidence: min(max(confidence, 0), 1)

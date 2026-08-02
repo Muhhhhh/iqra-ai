@@ -43,6 +43,36 @@ struct TokenAlignerTests {
         #expect(result.mistakeCount == 0)
     }
 
+    @Test("A word written with a dagger alef matches either modern spelling")
+    func daggerAlefMatchesBothSpellings() {
+        // The Uthmani text marks a long ā with a superscript alef; modern orthography
+        // writes it out in some words and not in others, and the recogniser emits
+        // modern orthography. Both readings must be accepted, or one half of them is
+        // reported as a misrecitation.
+        //
+        // From 14:5 — بِـَٔايَـٰتِنَآ, which whisper transcribes بآياتنا. Before this the
+        // word was flagged "check this" every time it was recited correctly.
+        let expected = target("وَلَقَدْ أَرْسَلْنَا مُوسَىٰ بِـَٔايَـٰتِنَآ")
+        let written = aligner.align(heard: heard("ولقد أرسلنا موسى بآياتنا"), against: expected, isFinal: true)
+        #expect(written.words.allSatisfy { $0.status == .correct })
+
+        // And the other convention — هَٰذَا against هذا — must keep working.
+        let unwritten = target("هَٰذَا ذَٰلِكَ ٱلرَّحْمَٰنِ")
+        let result = aligner.align(heard: heard("هذا ذلك الرحمن"), against: unwritten, isFinal: true)
+        #expect(result.words.allSatisfy { $0.status == .correct })
+    }
+
+    @Test("A real difference of a written alef is still reported")
+    func writtenAlefDifferenceSurvives() {
+        // The dagger-alef tolerance must not spread to words that genuinely differ by a
+        // written alef. قَالَ and قُل are different words, and confusing them is a real
+        // mistake worth reporting.
+        let expected = target("قَالَ رَبِّ")
+        let result = aligner.align(heard: heard("قل رب"), against: expected, isFinal: true)
+
+        #expect(result.words[0].status != .correct)
+    }
+
     @Test("Diacritics and orthographic variants do not count as mistakes")
     func normalizationTolerance() {
         // Target is Uthmani with full diacritics; the recognizer emits bare modern

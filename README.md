@@ -212,8 +212,20 @@ Detection improved *with* the false-flag rate rather than against it, because bo
 failures had one cause: fragments too short to transcribe. Past 1.6 s the curve flattens,
 and every further tenth of a second is feedback the reciter waits for after they stop.
 
-**These numbers are not good.** One word in nine is still falsely flagged, and only about
-a third of clean passages come back completely unmarked. That is the honest state of word
+Those figures come from short muffaṣal surahs. On long surahs — Al-Baqarah, An-Nisā',
+Al-A'rāf — the false-flag rate is roughly **34%**, and no clean passage came back
+unmarked at all. Longer āyāt, denser text and a faster reading are all harder, and any
+claim about accuracy has to say which material it was measured on.
+
+The default eval set spans both for a reason. Drawn only from the short surahs, it
+contained **17 words carrying a dagger alef** across eleven surahs, and was therefore
+blind to a spelling ambiguity affecting **11% of the Quran** (9,301 words) — a defect a
+user reported from the app before any measurement here caught it. An eval set that does
+not contain the failure cannot measure the fix.
+
+**These numbers are not good.** One word in nine is still falsely flagged on short
+surahs, one in three on long ones, and only about a third of short clean passages come
+back completely unmarked. That is the honest state of word
 matching on real recitation, and it is why the app's language is "check this" rather than
 "wrong", and why the muṣḥaf never presents a verdict as final.
 

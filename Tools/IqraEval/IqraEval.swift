@@ -336,6 +336,11 @@ struct IqraEval {
         var repeatCases = 0
         var repeatsMisreadAsAdditions = 0
 
+        /// Heard words containing U+FFFD — whisper's byte-level BPE splits an Arabic
+        /// character across two tokens, and decoding each token separately destroys it.
+        /// Such a word can never match anything, so every one is a false flag waiting
+        /// to happen. This must stay at zero.
+        var corruptedWords = 0
         var wordErrors = 0
         var referenceWords = 0
         var segments = 0
@@ -351,6 +356,9 @@ struct IqraEval {
         ) {
             segments += segmentCount
             realTimeFactors.append(realTimeFactor)
+
+            corruptedWords += heard.split(whereSeparator: \.isWhitespace)
+                .count { $0.unicodeScalars.contains("\u{FFFD}") }
 
             let reference = normalizedWords(testCase.spokenText)
             referenceWords += reference.count
@@ -396,6 +404,9 @@ struct IqraEval {
 
         func printSummary() {
             let out = { (line: String) in Swift.print(line) }
+            if corruptedWords > 0 {
+                out("  CORRUPTED WORDS      \(corruptedWords) heard words contain U+FFFD — token bytes lost")
+            }
             if referenceWords > 0 {
                 out("  word error rate      \(format(100 * Double(wordErrors) / Double(referenceWords), 1))%  "
                     + "(\(wordErrors) errors in \(referenceWords) words)")
@@ -497,7 +508,11 @@ struct IqraEval {
 // MARK: - Arguments
 
 struct Arguments {
-    var surahs: [Int] = [112, 110, 108, 103, 105, 106, 107, 109, 111, 113, 114]
+    /// A mix on purpose. The short muffaṣal surahs alone contain almost no dagger
+    /// alefs — 17 words across eleven surahs — so an eval set drawn only from them is
+    /// blind to a spelling ambiguity that affects 11% of the Quran (9,301 words). The
+    /// long surahs carry it densely: Al-Baqarah alone has 698.
+    var surahs: [Int] = [2, 4, 7, 20, 36, 55, 67, 78, 112, 114]
     var trailingSilences: [TimeInterval] = [0.6]
     var kinds: [IqraEval.Kind] = IqraEval.Kind.allCases
     var reciterID: String = Reciter.husary.id

@@ -86,8 +86,15 @@ public struct TokenAligner: Sendable {
 
         guard !expected.isEmpty else { return AlignmentResult(words: [], insertions: [], isFinal: isFinal) }
 
+        // Each expected word carries every spelling that counts as itself — see
+        // `ArabicNormalizer.matchingVariants`. Almost always exactly one.
         let operations = editScript(
-            expected: expected.map(\.normalized),
+            expected: expected.map { word in
+                let variants = ArabicNormalizer.matchingVariants(of: word.text)
+                // The database's stored form stays authoritative; the variants only add
+                // readings it cannot represent.
+                return variants.contains(word.normalized) ? variants : [word.normalized] + variants
+            },
             heard: heard.map(\.normalized)
         )
 
@@ -137,14 +144,16 @@ public struct TokenAligner: Sendable {
     /// costs are kept as two rolling rows with a byte of backtrace direction per cell.
     /// Memory is O(m·n) *bytes* rather than O(m·n) doubles ×4, and the results are
     /// identical — this is an optimisation, not an approximation.
-    func editScript(expected: [String], heard: [String]) -> [Operation] {
+    /// - Parameter expected: one entry per expected word, each holding that word's
+    ///   accepted spellings. A cell's cost uses whichever spelling fits best.
+    func editScript(expected: [[String]], heard: [String]) -> [Operation] {
         let m = expected.count
         let n = heard.count
         guard m > 0 else { return (0..<n).map { .insert(heard: $0) } }
         guard n > 0 else { return (0..<m).map { .delete(expected: $0) } }
 
         // Converted once each, not once per cell.
-        let expectedChars = expected.map(Array.init)
+        let expectedChars = expected.map { $0.map(Array.init) }
         let heardChars = heard.map(Array.init)
 
         let infinity = Double.greatestFiniteMagnitude / 4
@@ -187,7 +196,7 @@ public struct TokenAligner: Sendable {
 
             for j in 1...n {
                 // --- match ---------------------------------------------------------
-                let similarity = Self.similarity(
+                let similarity = Self.bestSimilarity(
                     expectedWord, heardChars[j - 1], scratchA: &scratchA, scratchB: &scratchB
                 )
                 let substitution = 1.0 - similarity
@@ -251,7 +260,7 @@ public struct TokenAligner: Sendable {
             case fromMatch:
                 guard i > 0, j > 0 else { state = i > 0 ? fromSkip : fromExtra; continue }
                 // Recomputed for the O(m + n) cells on the path only.
-                let similarity = Self.similarity(
+                let similarity = Self.bestSimilarity(
                     expectedChars[i - 1], heardChars[j - 1], scratchA: &scratchA, scratchB: &scratchB
                 )
                 operations.append(.align(expected: i - 1, heard: j - 1, similarity: similarity))
@@ -484,6 +493,25 @@ public struct TokenAligner: Sendable {
         var scratchA = [Int](repeating: 0, count: rhs.count + 2)
         var scratchB = [Int](repeating: 0, count: rhs.count + 2)
         return similarity(Array(lhs), Array(rhs), scratchA: &scratchA, scratchB: &scratchB)
+    }
+
+    /// The best similarity across an expected word's accepted spellings.
+    ///
+    /// One spelling is the overwhelmingly common case, so this costs nothing extra
+    /// except on the words that are genuinely ambiguous.
+    static func bestSimilarity(
+        _ variants: [[Character]],
+        _ heard: [Character],
+        scratchA: inout [Int],
+        scratchB: inout [Int]
+    ) -> Double {
+        var best = 0.0
+        for variant in variants {
+            let score = similarity(variant, heard, scratchA: &scratchA, scratchB: &scratchB)
+            if score > best { best = score }
+            if best >= 1.0 { break }
+        }
+        return best
     }
 
     /// Similarity over pre-converted character arrays, reusing caller-owned scratch.
