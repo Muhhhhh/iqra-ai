@@ -1,0 +1,14 @@
+// Exposes whisper.cpp's C API to Swift.
+//
+// The headers under `include/` are copies staged by scripts/build-whisper.sh, not
+// checked-in sources — whisper.h and the ggml headers live in two separate include
+// trees upstream, and whisper.h includes "ggml.h" by quoted path, so they have to sit
+// in one flat directory to resolve.
+//
+// The static libraries themselves are linked via RecitationCore's linkerSettings in
+// Package.swift, because several ggml backend libraries are needed and their search
+// paths are build-directory-relative.
+module CWhisper {
+    header "include/whisper.h"
+    export *
+}

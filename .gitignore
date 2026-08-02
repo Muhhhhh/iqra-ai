@@ -1,0 +1,25 @@
+# Build products
+.build/
+build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# Fetched, not checked in — see scripts/build-whisper.sh and scripts/fetch-model.sh
+Vendor/
+Models/
+Sources/CWhisper/include/
+
+# Python environment for the model conversion scripts
+.venv/
+
+# The King Fahd Complex per-page fonts (QCF v1): 92 MB of third-party calligraphy,
+# fetched separately rather than redistributed here. Without them the app falls back
+# to Amiri Quran, which is bundled along with its OFL licence.
+Resources/Fonts/QCF/
+
+# Built by scripts/build-quran-db.py from the Quran.com API.
+Resources/quran.sqlite3
+
+.DS_Store
+.claude/settings.local.json
