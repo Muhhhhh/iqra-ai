@@ -509,6 +509,43 @@ So audio tajweed verification through this model is not a tuning problem. It sta
 default, and the honest summary is that it can tell you a word went unrecited — which the
 word matcher already does.
 
+### Four checks, and what they said
+
+**The tuning is not overfitted to one reciter.** Everything had been fitted to
+Al-Husary's studio murattal. Run against three others on the same passages:
+
+| reciter | WER | falsely flagged | never transcribed |
+|---|---|---|---|
+| Al-Husary (tuned on) | ~41% | 9.4% | 14 |
+| Abdul Basit | 32.8% | 6.3% | 5 |
+| Alafasy | 38.5% | 6.7% | 8 |
+| Al-Minshawi | 28.7% | 2.5% | 0 |
+
+Husary is the *hardest* case, not the one it is fitted to — which is a good accident:
+the defaults were tuned against the quietest, slowest material in the set.
+
+**The phoneme head is acoustic, unlike the ṣifah heads.** The same experiment that
+condemned the ṣifah heads, applied to alignment confidence: replace one word's audio with
+another word's and see whether the alignment notices.
+
+| | confidence |
+|---|---|
+| word intact | 90.6% |
+| word's audio replaced | 47.0% |
+
+A clear drop in 81% of trials. So goodness-of-pronunciation scoring — force-align the
+known text, look for where the audio stops supporting it — is viable, and would replace
+comparing two strings one of which is 41% wrong. Not yet built: it needs the 946 MB
+phoneme model resident for every session, which is a real cost and a separate decision.
+
+**Madd by duration is built, and unproven.** `AlignedTajweedAnalyzer` measures each
+elongation against the reciter's own two-count madds. It is quiet on correct recitation —
+1–2 false flags across 40-odd measured elongations, against 17% for the ṣifah approach —
+but shortening an elongation by half was caught 1 time in 42. Low false flags with no
+demonstrated detection is not a working feature, it is a silent one. The likely cause is
+that it refuses to judge unless a passage contains three two-count madds to set the pace
+from, which most single āyāt do not. It stays off.
+
 **What survives, and is worth building on:** the alignment itself. It gives per-phoneme
 timings at 99% confidence without depending on transcription at all. Madd is a question of
 *duration*, not of ṣifah — and the phonetiser encodes madd length directly, as repeated

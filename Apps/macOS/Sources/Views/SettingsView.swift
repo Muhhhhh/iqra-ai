@@ -271,6 +271,12 @@ private struct TajweedSettings: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                LabeledContent("Reading", value: "Ḥafṣ ʿan ʿĀṣim")
+                    .font(.caption)
+                Text("Every rule, threshold and reference recording here assumes this riwāyah. Madd lengths differ legitimately between readings, so reciting Warsh or Qālūn will have correct recitation questioned. There is no setting for this because nothing in the app has been calibrated for another reading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
                 Text("From your recitation")
             } footer: {

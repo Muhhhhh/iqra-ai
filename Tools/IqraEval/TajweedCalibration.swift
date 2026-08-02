@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.goodnessTest {
+            try await measureGoodness(arguments, reciter: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.alignedTajweed {
             try await measureAligned(arguments, reciter: reciter, model: analyzer, store: store)
             return
@@ -383,6 +388,120 @@ enum TajweedCalibration {
         return best
     }
 
+    // MARK: - Goodness of pronunciation
+
+    /// Does alignment confidence collapse where the reciter said something else?
+    ///
+    /// If it does, the word matcher can be rebuilt on it: instead of transcribing freely
+    /// and comparing two noisy strings — 41% of words wrong before the comparison even
+    /// starts — force-align the text that is *known* and look for where the audio stops
+    /// supporting it. That is how pronunciation scoring is normally done, and it does not
+    /// depend on the recogniser at all.
+    ///
+    /// The ṣifah heads failed exactly this kind of test: they turned out to predict from
+    /// surrounding context rather than report what was heard. The phoneme head might have
+    /// the same flaw, so it gets the same experiment before anything is built on it. One
+    /// word's audio is replaced with another word's, of the same length, and the question
+    /// is whether that word's alignment confidence falls.
+    static func measureGoodness(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin — run scripts/export-phonemes.py")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+
+        print("Goodness of pronunciation")
+        print("  reciter  \(reciter.name)")
+        print("")
+
+        var intact: [Double] = []
+        var replaced: [Double] = []
+        var separated = 0
+        var trials = 0
+
+        for surah in arguments.surahs {
+            let surahTarget = try await store.target(surah: surah)
+            for verse in surahTarget.verses.prefix(arguments.limitPerSurah) {
+                guard let entry = script[verse.reference], entry.wordCount >= 4,
+                      let url = try? await library.fetch(verse.reference, reciter: reciter),
+                      let audio = try? AudioFileLoader.load(url: url),
+                      let observed = try? await model.probabilities(for: audio),
+                      let phonemes = observed.probabilities["phonemes"],
+                      let spans = try? aligner.align(
+                          probabilities: phonemes,
+                          target: entry.symbols.map(Int.init)
+                      )
+                else { continue }
+
+                func confidence(_ spans: [CTCForcedAligner.Span], word: Int) -> Double? {
+                    let mine = spans.filter {
+                        $0.index < entry.wordOfPhoneme.count
+                            && Int(entry.wordOfPhoneme[$0.index]) == word
+                    }
+                    guard !mine.isEmpty else { return nil }
+                    return mine.map(\.confidence).reduce(0, +) / Double(mine.count)
+                }
+
+                // A word in the middle, and a donor from elsewhere in the same āyah.
+                let victim = entry.wordCount / 2
+                let donorWord = victim >= 2 ? 0 : entry.wordCount - 1
+                guard let before = confidence(spans, word: victim),
+                      let victimRange = entry.range(ofWord: victim),
+                      let donorRange = entry.range(ofWord: donorWord)
+                else { continue }
+
+                func time(_ range: Range<Int>) -> (start: Double, end: Double)? {
+                    let mine = spans.filter { $0.index >= range.lowerBound && $0.index < range.upperBound }
+                    guard let first = mine.first, let last = mine.last else { return nil }
+                    return (
+                        observed.startTime + Double(first.frames.lowerBound) * observed.frameDuration,
+                        observed.startTime + Double(last.frames.upperBound) * observed.frameDuration
+                    )
+                }
+                guard let victimTime = time(victimRange), let donorTime = time(donorRange) else { continue }
+                let span = min(victimTime.end - victimTime.start, donorTime.end - donorTime.start)
+                guard span > 0.1 else { continue }
+
+                guard let broken = corrupt(
+                    audio,
+                    around: (victimTime.start + victimTime.end) / 2,
+                    donorTime: (donorTime.start + donorTime.end) / 2,
+                    span: span
+                ),
+                      let after = try? await model.probabilities(for: broken),
+                      let brokenPhonemes = after.probabilities["phonemes"],
+                      let brokenSpans = try? aligner.align(
+                          probabilities: brokenPhonemes,
+                          target: entry.symbols.map(Int.init)
+                      ),
+                      let afterConfidence = confidence(brokenSpans, word: victim)
+                else { continue }
+
+                trials += 1
+                intact.append(before)
+                replaced.append(afterConfidence)
+                if afterConfidence < before - 0.15 { separated += 1 }
+            }
+        }
+
+        guard trials > 0 else { print("  no trials"); return }
+        let meanIntact = intact.reduce(0, +) / Double(intact.count)
+        let meanReplaced = replaced.reduce(0, +) / Double(replaced.count)
+        print("  trials                     \(trials)")
+        print("  confidence, word intact    \(pct(meanIntact))")
+        print("  confidence, word replaced  \(pct(meanReplaced))")
+        print("  fell by more than 15 pts   \(separated)/\(trials)  (\(pct(Double(separated) / Double(trials))))")
+        print("")
+        print("  If the second number is not clearly below the first, the phoneme head has")
+        print("  the same flaw as the ṣifah heads and nothing should be built on it.")
+    }
+
     // MARK: - Letter-level tajweed
 
     /// Does judging the phoneme instead of the word actually see a missing ghunnah?
@@ -415,6 +534,8 @@ enum TajweedCalibration {
         var examinedClean = 0
         var attempted = 0
         var caught = 0
+        var maddAttempted = 0
+        var maddCaught = 0
 
         for surah in arguments.surahs {
             let surahTarget = try await store.target(surah: surah)
@@ -450,6 +571,54 @@ enum TajweedCalibration {
                 let clean = await analyzer.analyze(segments: [segment(audio)], target: target)
                 falseFlags += clean.count
                 examinedClean += await analyzer.coverage().examined
+
+                // Shorten an elongation and see whether it is noticed. Cutting audio out
+                // is the honest way to make this mistake: it is what a reciter who does
+                // not hold the madd actually produces — the sound is simply not there for
+                // as long.
+                if let entryScript = script[verse.reference],
+                   let observedForMadd = try? await model.probabilities(for: audio),
+                   let phonemesForMadd = observedForMadd.probabilities["phonemes"],
+                   let spansForMadd = try? aligner.align(
+                       probabilities: phonemesForMadd,
+                       target: entryScript.symbols.map(Int.init)
+                   ) {
+                    // Find a run of a repeated madd carrier longer than two.
+                    var runStart = 0
+                    var found: Range<Int>?
+                    while runStart < entryScript.symbols.count {
+                        let symbol = entryScript.symbols[runStart]
+                        var end = runStart + 1
+                        while end < entryScript.symbols.count, entryScript.symbols[end] == symbol { end += 1 }
+                        if end - runStart > 2, [27, 28, 29, 30, 31].contains(Int(symbol)) {
+                            found = runStart..<end
+                            break
+                        }
+                        runStart = end
+                    }
+
+                    if let run = found {
+                        let mine = spansForMadd.filter { $0.index >= run.lowerBound && $0.index < run.upperBound }
+                        if let first = mine.first, let last = mine.last, last.frames.upperBound > first.frames.lowerBound {
+                            let start = observedForMadd.startTime
+                                + Double(first.frames.lowerBound) * observedForMadd.frameDuration
+                            let end = observedForMadd.startTime
+                                + Double(last.frames.upperBound) * observedForMadd.frameDuration
+                            let rate = AudioChunk.canonicalSampleRate
+                            // Take out the middle half of the elongation.
+                            let cutFrom = Int((start + (end - start) * 0.25) * rate)
+                            let cutTo = Int((start + (end - start) * 0.75) * rate)
+                            if cutFrom > 0, cutTo <= audio.samples.count, cutTo > cutFrom {
+                                var shortened = Array(audio.samples[0..<cutFrom])
+                                shortened.append(contentsOf: audio.samples[cutTo...])
+                                let chunk = AudioChunk(samples: shortened, startTime: audio.startTime)
+                                maddAttempted += 1
+                                let after = await analyzer.analyze(segments: [segment(chunk)], target: target)
+                                if after.count > clean.count { maddCaught += 1 }
+                            }
+                        }
+                    }
+                }
 
                 // Locate a ghunnah phoneme precisely, and take its sound away.
                 guard let observed = try? await model.probabilities(for: audio),
@@ -491,6 +660,11 @@ enum TajweedCalibration {
         print("  āyāt tested          \(ayatTested)")
         print("  examined             \(examinedClean) phonemes carrying a rule")
         print("  FALSE FLAGS          \(falseFlags) on correct recitation")
+        print("")
+        print("── with one elongation shortened by half ".padding(toLength: 72, withPad: "─", startingAt: 0))
+        print("  attempted            \(maddAttempted)")
+        print("  CAUGHT               \(maddCaught)/\(maddAttempted)  "
+              + "(\(pct(Double(maddCaught) / Double(max(maddAttempted, 1)))))")
         print("")
         print("── with one ghunnah removed ".padding(toLength: 72, withPad: "─", startingAt: 0))
         print("  attempted            \(attempted)")
