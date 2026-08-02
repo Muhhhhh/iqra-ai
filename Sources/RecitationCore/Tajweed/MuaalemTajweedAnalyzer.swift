@@ -128,16 +128,41 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         if modelURL.pathExtension == "mlmodelc" {
             model = try MLModel(contentsOf: modelURL, configuration: configuration)
         } else {
-            // Compiling takes a while, so a compiled copy is cached beside the package
-            // rather than rebuilt on every launch.
-            let compiled = modelURL.deletingPathExtension().appendingPathExtension("mlmodelc")
-            if !FileManager.default.fileExists(atPath: compiled.path) {
-                let temporary = try MLModel.compileModel(at: modelURL)
-                try? FileManager.default.removeItem(at: compiled)
-                try FileManager.default.moveItem(at: temporary, to: compiled)
-            }
+            // Compiling takes a while, so the compiled copy is cached — but *not* beside
+            // the package. In a shipped app the package sits inside the bundle, which is
+            // read-only under the sandbox, so writing there throws and the whole analyzer
+            // fails to load. It then reports nothing about any rule, which is
+            // indistinguishable from a recitation with nothing wrong in it. The cache
+            // goes somewhere writable instead.
+            let compiled = try Self.compiledModelURL(for: modelURL)
             model = try MLModel(contentsOf: compiled, configuration: configuration)
         }
+    }
+
+    /// A compiled copy of `modelURL`, built once and cached in Application Support.
+    ///
+    /// Falls back to compiling into a temporary directory if even that is unavailable, so
+    /// a failure to cache never becomes a failure to analyse.
+    static func compiledModelURL(for modelURL: URL) throws -> URL {
+        let stem = modelURL.deletingPathExtension().lastPathComponent
+        let caches = try? FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appending(path: "Iqra/CompiledModels", directoryHint: .isDirectory)
+
+        if let caches {
+            let cached = caches.appending(path: "\(stem).mlmodelc")
+            if FileManager.default.fileExists(atPath: cached.path) { return cached }
+            try? FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+            let temporary = try MLModel.compileModel(at: modelURL)
+            if (try? FileManager.default.moveItem(at: temporary, to: cached)) != nil {
+                return cached
+            }
+            return temporary
+        }
+        return try MLModel.compileModel(at: modelURL)
     }
 
     public var isLoaded: Bool { model != nil }

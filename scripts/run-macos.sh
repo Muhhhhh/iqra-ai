@@ -105,7 +105,10 @@ fi
 
 # The Muaalem pronunciation model and its feature front-end. Without them tajweed falls
 # back to measuring madd duration, which cannot judge ghunnah or qalqalah.
-for package in "$ROOT"/Models/muaalem-*.mlpackage "$ROOT"/Models/muaalem-*.mlmodelc; do
+# Compiled form first: a .mlpackage has to be compiled at runtime, and the app bundle is
+# read-only under the sandbox, so shipping only the package means paying to compile it
+# into a cache on first launch.
+for package in "$ROOT"/Models/muaalem-*.mlmodelc "$ROOT"/Models/muaalem-*.mlpackage; do
   [[ -e "$package" ]] || continue
   cp -Rc "$package" "$APP/Contents/Resources/" 2>/dev/null || cp -R "$package" "$APP/Contents/Resources/"
   echo "==> Bundling tajweed model ($(basename "$package"), $(du -sh "$package" | cut -f1))"
