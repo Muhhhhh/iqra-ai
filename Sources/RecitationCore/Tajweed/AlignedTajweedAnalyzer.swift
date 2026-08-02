@@ -80,6 +80,25 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     private let options: Options
     private let aligner = CTCForcedAligner(blank: 0)
     private var lastCoverage: TajweedCoverage = .none
+    /// Seconds per haraka, gathered from every two-count madd heard this session.
+    ///
+    /// Held across calls rather than recomputed per passage. A single āyah rarely holds
+    /// the three natural madds needed to establish a pace, so a per-passage baseline
+    /// simply refused to judge — measured at 1 detection in 42 attempts, with the
+    /// elongations it declined to look at making up almost all of the gap. Recitation
+    /// pace does not change between one āyah and the next, so there is no reason to
+    /// throw the evidence away at the passage boundary.
+    private var harakaSamples: [Double] = []
+    /// Durations of every elongation heard this session, grouped by how many harakāt it
+    /// is supposed to run for.
+    ///
+    /// A four-count madd is compared against the reciter's *other* four-count madds, not
+    /// against twice their two-count pace. Extrapolating from the short ones proved too
+    /// lenient to be useful: measured on Al-Husary, his four-counts run about 0.56 s
+    /// where twice his two-count pace predicts 0.48 s, so the shortfall threshold sat
+    /// almost exactly where halving the elongation lands — and halved madds were caught
+    /// 0 times in 42. Comparing like with like removes the extrapolation.
+    private var durationsByHarakat: [Int: [Double]] = [:]
 
     public init(model: MuaalemTajweedAnalyzer, script: PhonemeScript, options: Options = .default) {
         self.model = model
@@ -226,34 +245,60 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         var measured: [(range: Range<Int>, harakat: Int, seconds: Double, confident: Bool)] = []
 
         for run in maddRuns(in: symbols) {
-            var seconds = 0.0
-            var frames = 0
+            // First frame of the run to the last, *including the blanks between them*.
+            //
+            // A madd is written as a repeated symbol, and CTC requires a blank between
+            // two identical symbols — so the sustained vowel itself lands largely on
+            // those blanks, not on the symbol frames. Summing only the symbol spans
+            // measured the onsets and missed the hold: it stayed almost constant when
+            // half the elongation was cut away, which is why shortening a madd was
+            // caught 0 times in 42. The span from start to end is the duration.
             var confident = true
+            var lower = Int.max
+            var upper = 0
             for index in run.range {
                 guard let span = byIndex[index] else { confident = false; continue }
-                frames += span.frames.count
-                // A *much* lower bar than the ṣifah checks use, and deliberately so.
-                // Shortening an elongation is itself something the aligner is less sure
-                // about, so requiring high confidence here would look away from exactly
-                // the case being checked — measured at 0 caught out of 42 before this was
-                // relaxed. What matters for madd is the duration, and the alignment is
-                // forced to span the audio whether it is confident or not.
-                if span.confidence < 0.05 { confident = false }
+                lower = min(lower, span.frames.lowerBound)
+                upper = max(upper, span.frames.upperBound)
+                // No confidence bar at all, and this took three attempts to accept.
+                // Cutting an elongation short lowers the aligner's confidence in the
+                // phonemes around the cut — so *every* threshold, however low, excluded
+                // precisely the recitations being checked. At 0.4 and at 0.05 the
+                // shortened madds produced no measurement whatsoever: 0 caught out of 42
+                // both times, not because the duration looked right but because it was
+                // never looked at. Forced alignment spans the audio whether it is
+                // confident or not, and duration is the whole question here.
             }
-            guard frames > 0 else { continue }
-            seconds = Double(frames) * 0.04   // the model's frame rate
+            guard upper > lower else { continue }
+            let seconds = Double(upper - lower) * 0.04   // the model's frame rate
             measured.append((run.range, run.harakat, seconds, confident))
         }
 
-        // The reciter's own haraka, from their natural two-count madds.
-        let baselines = measured.filter { $0.harakat == 2 && $0.confident }.map { $0.seconds / 2 }
-        guard baselines.count >= options.minimumBaselineMadds else { return [] }
-        let baseline = baselines.sorted()[baselines.count / 2]
+        // The reciter's own haraka, from their natural two-count madds — this passage's
+        // and every earlier one's.
+        harakaSamples.append(contentsOf: measured.filter { $0.harakat == 2 && $0.confident }.map { $0.seconds / 2 })
+        // Bounded, and biased to the recent: someone who speeds up should not be judged
+        // against the pace they opened with.
+        if harakaSamples.count > 200 { harakaSamples.removeFirst(harakaSamples.count - 200) }
+        guard harakaSamples.count >= options.minimumBaselineMadds else { return [] }
+        let baseline = harakaSamples.sorted()[harakaSamples.count / 2]
+
+        for entry in measured where entry.confident {
+            durationsByHarakat[entry.harakat, default: []].append(entry.seconds)
+            if durationsByHarakat[entry.harakat]!.count > 60 {
+                durationsByHarakat[entry.harakat]!.removeFirst()
+            }
+        }
 
         var notes: [TajweedNote] = []
         for entry in measured where entry.harakat > 2 && entry.confident {
             examined += 1
-            let expected = Double(entry.harakat) * baseline
+            // The reciter's own elongations of this length, when there are enough of
+            // them; their two-count pace otherwise.
+            let peers = (durationsByHarakat[entry.harakat] ?? []).sorted()
+            let expected = peers.count >= options.minimumBaselineMadds
+                ? peers[peers.count / 2]
+                : Double(entry.harakat) * baseline
             guard entry.seconds < expected * options.maddShortfall else { continue }
             guard let word = owner.indices.contains(entry.range.lowerBound)
                 ? owner[entry.range.lowerBound].word : nil else { continue }

@@ -538,7 +538,32 @@ known text, look for where the audio stops supporting it — is viable, and woul
 comparing two strings one of which is 41% wrong. Not yet built: it needs the 946 MB
 phoneme model resident for every session, which is a real cost and a separate decision.
 
-**Madd by duration is built, and unproven.** `AlignedTajweedAnalyzer` measures each
+**Madd by duration: measurement fixed, detection still unproven.** Four bugs found by
+chasing why a halved elongation was never caught, three of them the same mistake:
+
+* A per-passage pace baseline. Most single āyāt lack the natural madds needed to set one,
+  so it refused to judge. Now carried across the session.
+* Summing the symbol frames of a repeated madd. CTC puts a blank between two identical
+  symbols, so the sustained vowel lands largely on blanks — the sum measured the onsets
+  and missed the hold. Now the span from first frame to last.
+* Extrapolating a four-count madd from twice the two-count pace. Al-Husary's four-counts
+  run 0.56 s where that predicts 0.48 s, putting the threshold almost exactly where
+  halving lands. Now compared against his own elongations of the same length.
+* **An alignment-confidence bar, at three different values.** Cutting an elongation short
+  lowers the aligner's confidence around the cut, so every threshold — 0.4, then 0.05 —
+  excluded exactly the recitations being checked. Not "the duration looked fine" but "the
+  duration was never measured". Removed entirely.
+
+After all four: 81 elongations examined, 1 false flag, and 2 of 42 halved madds caught.
+
+That last number is the honest state, with one caveat that matters. **The negative may not
+represent the mistake.** Cutting audio out of a vowel leaves a discontinuity; a reciter
+who does not hold a madd produces a smoothly shorter vowel. Time-compression rather than
+splicing would be the faithful test, and until that exists this measurement cannot
+separate "the detector does not work" from "the test does not resemble the error". The
+feature stays off either way.
+
+**Superseded:** `AlignedTajweedAnalyzer` measures each
 elongation against the reciter's own two-count madds. It is quiet on correct recitation —
 1–2 false flags across 40-odd measured elongations, against 17% for the ṣifah approach —
 but shortening an elongation by half was caught 1 time in 42. Low false flags with no
