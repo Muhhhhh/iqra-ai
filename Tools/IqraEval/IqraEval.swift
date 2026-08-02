@@ -912,6 +912,10 @@ struct Arguments {
     /// Explicit tajweed weights, for comparing conversions.
     var tajweedModelPath: String?
     var dumpTajweedOutput = false
+    /// Re-measure each clear occurrence with its acoustic evidence removed.
+    var tajweedNegatives = false
+    /// Remove the whole word rather than just the spike.
+    var tajweedRemoveWholeWord = false
     /// Frames of evidence required, matching the analyzer's own minimum.
     var minimumFrames = 3
     var verbose = false
@@ -959,6 +963,8 @@ struct Arguments {
             case "--calibrate-tajweed": calibrateTajweed = true
             case "--tajweed-model-path": tajweedModelPath = next()
             case "--dump-tajweed-output": dumpTajweedOutput = true
+            case "--tajweed-negatives": tajweedNegatives = true
+            case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--minimum-frames": minimumFrames = next().flatMap { Int($0) } ?? minimumFrames
             case "--verbose": verbose = true
             case "-h", "--help": wantsHelp = true

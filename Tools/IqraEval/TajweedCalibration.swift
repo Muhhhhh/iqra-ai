@@ -61,7 +61,13 @@ enum TajweedCalibration {
         /// requires is articulated across the boundary. Looking only inside the word that
         /// triggered the rule can therefore miss the very sound being checked.
         let peakByPadding: [Double]
+        /// Session time of the frame the peak fell on, which is where the evidence is.
+        let peakTime: TimeInterval
+        /// The whole word's span, for the stronger removal.
+        let wordRange: ClosedRange<TimeInterval>
         let frames: Int
+        /// Set when the same occurrence was re-measured with its evidence removed.
+        var peakAfterRemoval: Double?
     }
 
     struct Skips {
@@ -187,6 +193,7 @@ enum TajweedCalibration {
 
                 for segment in segments {
                     guard let observed = try? await analyzer.probabilities(for: segment) else { continue }
+                    let before = samples.count
                     collect(
                         occurrences: occurrences,
                         observed: observed,
@@ -196,6 +203,37 @@ enum TajweedCalibration {
                         into: &samples,
                         skips: &skips
                     )
+
+                    // Now take the evidence away and ask again.
+                    guard arguments.tajweedNegatives else { continue }
+                    for index in before..<samples.count {
+                        let sample = samples[index]
+                        guard sample.peak >= 0.5 else { continue }   // nothing to remove
+                        // Optionally take out the whole word rather than the spike: if the
+                        // verdict survives even that, the model is not reading the audio.
+                        let centre = arguments.tajweedRemoveWholeWord
+                            ? (sample.wordRange.lowerBound + sample.wordRange.upperBound) / 2
+                            : sample.peakTime
+                        guard var plan = spikeAndDonor(for: sample, in: observed, around: sample.peakTime),
+                              true else { continue }
+                        if arguments.tajweedRemoveWholeWord {
+                            plan.span = sample.wordRange.upperBound - sample.wordRange.lowerBound
+                        }
+                        guard
+                              let broken = corrupt(
+                                  segment,
+                                  around: centre,
+                                  donorTime: plan.donor,
+                                  span: plan.span
+                              ),
+                              let after = try? await analyzer.probabilities(for: broken)
+                        else { continue }
+                        samples[index].peakAfterRemoval = peak(
+                            of: samples[index],
+                            in: after,
+                            around: sample.peakTime
+                        )
+                    }
                 }
             }
         }
@@ -259,11 +297,16 @@ enum TajweedCalibration {
 
             var wanted: [Double] = []
             var against: [Double] = []
-            for frame in series[lower..<upper] where frame.count > max(presentIndex, absentIndex) {
+            var peakIndex = lower
+            for index in lower..<upper {
+                let frame = series[index]
+                guard frame.count > max(presentIndex, absentIndex) else { continue }
                 guard frame[0] < 0.5 else { continue }   // padding frame
                 let presence = frame[presentIndex]
                 let contrary = frame[absentIndex]
-                wanted.append(expectation.present ? presence : contrary)
+                let value = expectation.present ? presence : contrary
+                if wanted.isEmpty || value > (wanted.max() ?? 0) { peakIndex = index }
+                wanted.append(value)
                 against.append(expectation.present ? contrary : presence)
             }
             guard wanted.count >= minimumFrames else {
@@ -281,6 +324,8 @@ enum TajweedCalibration {
                     contrary: against.reduce(0, +) / Double(against.count),
                     peak: wanted.max() ?? 0,
                     peakByPadding: Self.paddings.map { window(extendingBy: $0).max() ?? 0 },
+                    peakTime: observed.startTime + Double(peakIndex) * observed.frameDuration,
+                    wordRange: range,
                     frames: wanted.count
                 )
             )
@@ -299,6 +344,127 @@ enum TajweedCalibration {
             best = max(best, sum)
         }
         return best / Double(window)
+    }
+
+    /// The peak for one occurrence, re-read from a fresh observation of the same span.
+    static func peak(
+        of sample: Sample,
+        in observed: MuaalemTajweedAnalyzer.Observation,
+        around time: TimeInterval,
+        span: TimeInterval = 0.4
+    ) -> Double {
+        guard let series = observed.probabilities[sample.head.rawValue] else { return 0 }
+        let lower = max(0, Int(((time - span / 2 - observed.startTime) / observed.frameDuration).rounded(.down)))
+        let upper = min(series.count, Int(((time + span / 2 - observed.startTime) / observed.frameDuration).rounded(.up)))
+        guard upper > lower else { return 0 }
+        let presentIndex = sample.head.presentIndex
+        let absentIndex = sample.head.absentIndex
+        var best = 0.0
+        for frame in series[lower..<upper] where frame.count > max(presentIndex, absentIndex) {
+            guard frame[0] < 0.5 else { continue }
+            best = max(best, sample.expectsPresence ? frame[presentIndex] : frame[absentIndex])
+        }
+        return best
+    }
+
+    // MARK: - Negatives
+
+    /// Remove the sound a rule requires, and see whether the checker notices.
+    ///
+    /// Every number this project has about tajweed is one-sided: measured on recitation
+    /// that is correct, so it can say how often a qārī is wrongly questioned and nothing
+    /// at all about how often a real mistake is caught. A checker that says nothing ever
+    /// scores perfectly on that measure. This is the other half.
+    ///
+    /// The mistake is made by replacing the stretch of audio the model spikes on with the
+    /// audio immediately before it, of exactly the same length. The nasalisation, or the
+    /// echo, is gone; the voice, the level and every timestamp in the passage are
+    /// untouched. That matters — silencing the region instead would test whether the
+    /// checker notices *silence*, which is a much easier question and not the one being
+    /// asked.
+    ///
+    /// It is circular in one respect, and worth naming: the model chooses where to cut.
+    /// So this cannot prove the model knows where a ghunnah is. What it can show is
+    /// whether removing the acoustic evidence changes the verdict — and if it does not,
+    /// the checker is not reading the audio at all.
+    static func corrupt(
+        _ chunk: AudioChunk,
+        around time: TimeInterval,
+        donorTime: TimeInterval,
+        span: TimeInterval
+    ) -> AudioChunk? {
+        let rate = AudioChunk.canonicalSampleRate
+        let length = Int(span * rate)
+        let start = Int((time - chunk.startTime - span / 2) * rate)
+        let donor = Int((donorTime - chunk.startTime - span / 2) * rate)
+        guard length > 0,
+              start >= 0, start + length <= chunk.samples.count,
+              donor >= 0, donor + length <= chunk.samples.count,
+              abs(donor - start) >= length
+        else { return nil }
+
+        var samples = chunk.samples
+        // Cross-faded at the joins, so the splice itself does not become the anomaly the
+        // model reacts to.
+        let fade = min(length / 8, Int(0.01 * rate))
+        for offset in 0..<length {
+            let replacement = samples[donor + offset]
+            if offset < fade {
+                let mix = Float(offset) / Float(max(fade, 1))
+                samples[start + offset] = samples[start + offset] * (1 - mix) + replacement * mix
+            } else if offset >= length - fade {
+                let mix = Float(length - offset) / Float(max(fade, 1))
+                samples[start + offset] = samples[start + offset] * (1 - mix) + replacement * mix
+            } else {
+                samples[start + offset] = replacement
+            }
+        }
+        return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
+    /// The stretch of the rule's spike, and somewhere in the same segment the model says
+    /// the attribute is *absent* — the only honest place to take replacement audio from.
+    ///
+    /// Copying from just before the spike was the first attempt and was wrong: a ghunnah
+    /// runs two harakāt, so the audio immediately before its peak is usually still inside
+    /// the same ghunnah. That replaced the nasal with more nasal, and unsurprisingly
+    /// changed almost nothing.
+    static func spikeAndDonor(
+        for sample: Sample,
+        in observed: MuaalemTajweedAnalyzer.Observation,
+        around time: TimeInterval
+    ) -> (span: TimeInterval, donor: TimeInterval)? {
+        guard let series = observed.probabilities[sample.head.rawValue] else { return nil }
+        let presentIndex = sample.head.presentIndex
+        let absentIndex = sample.head.absentIndex
+        let wanted = sample.expectsPresence ? presentIndex : absentIndex
+        let other = sample.expectsPresence ? absentIndex : presentIndex
+
+        let centre = Int(((time - observed.startTime) / observed.frameDuration).rounded())
+        guard centre >= 0, centre < series.count else { return nil }
+
+        func value(_ index: Int, _ classIndex: Int) -> Double {
+            guard index >= 0, index < series.count, series[index].count > classIndex else { return 0 }
+            guard series[index][0] < 0.5 else { return 0 }
+            return series[index][classIndex]
+        }
+
+        // Grow outward while the attribute is still being asserted.
+        var first = centre, last = centre
+        while first > 0, value(first - 1, wanted) > 0.3 { first -= 1 }
+        while last + 1 < series.count, value(last + 1, wanted) > 0.3 { last += 1 }
+        let frames = last - first + 1
+        let span = Double(frames) * observed.frameDuration
+
+        // The frame most confident of the contrary, far enough away not to overlap.
+        var donorIndex = -1
+        var best = 0.0
+        for index in 0..<series.count where abs(index - centre) > frames {
+            let score = value(index, other)
+            if score > best { best = score; donorIndex = index }
+        }
+        guard donorIndex >= 0, best > 0.5 else { return nil }
+        return (span, observed.startTime + Double(donorIndex) * observed.frameDuration)
     }
 
     // MARK: - Reporting
@@ -419,6 +585,30 @@ enum TajweedCalibration {
         if excluded > 0 {
             print("  \(excluded) occurrences of idghām and iqlāb are excluded from audio checking;")
             print("  they are still detected in the text and coloured on the page.")
+        }
+        print("")
+        let removed = samples.compactMap { sample -> (Sample, Double)? in
+            guard let after = sample.peakAfterRemoval else { return nil }
+            return (sample, after)
+        }
+        if !removed.isEmpty {
+            let options = MuaalemTajweedAnalyzer.Options()
+            let caught = removed.count { $0.1 < options.presenceThreshold }
+            print("")
+            print("── with the evidence removed ".padding(toLength: 72, withPad: "─", startingAt: 0))
+            print("  \(removed.count) occurrences that the model heard clearly were re-measured with the")
+            print("  audio it spiked on replaced by the audio just before it — same length, same")
+            print("  voice, same timings, no nasalisation or echo.")
+            print("")
+            let befores = removed.map { $0.0.peak }.sorted()
+            let afters = removed.map { $0.1 }.sorted()
+            print("  peak on the rule   before \(pct(percentile(befores, 0.5))) (median)   after \(pct(percentile(afters, 0.5))) (median)")
+            print("  CAUGHT             \(caught)/\(removed.count)  (\(pct(Double(caught) / Double(removed.count))))")
+            print("")
+            print("  This is the first detection figure this project has had. It is not a")
+            print("  measure of catching real misrecitation: the model chose where to cut, so it")
+            print("  cannot show the model knows where a ghunnah is — only whether removing the")
+            print("  sound changes the verdict. Read it beside the false-flag rate above.")
         }
         print("")
         print("Setting a threshold is choosing that number. It is not a measure of how many")

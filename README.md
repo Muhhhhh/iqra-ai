@@ -450,6 +450,34 @@ iqlāb are excluded from audio checking entirely: they show no spike at all in a
 occurrences a qārī recited correctly, which is a property of the model rather than of the
 recitation. Both are still detected in the text and coloured on the page.
 
+### What the tajweed checker actually responds to
+
+`IqraEval --calibrate-tajweed --tajweed-negatives` supplies the half that was missing:
+recitation with the rule's evidence taken out. The stretch of audio the model spikes on
+is replaced by audio from elsewhere in the same segment that the model itself marks as
+*lacking* that attribute — same length, same voice, same level, every timestamp intact.
+Silencing it instead would only test whether the checker notices silence.
+
+| what was removed | caught | peak on the rule, after |
+|---|---|---|
+| the spike itself (~200 ms, the ghunnah or qalqalah) | 13% | 99.2% (median) |
+| the whole word | 86% | 0.3% (median) |
+
+**The checker responds to whether the word was recited, not to whether the ṣifah inside
+it was produced.** Take out the nasalisation and leave the rest of the word standing, and
+the model goes on asserting the ghunnah at 99% — the surrounding letters are enough for
+it. Take the word away and the verdict collapses immediately.
+
+That is a limit of what this feature can honestly claim. A reciter who says the word but
+does not give the nūn its ghunnah — exactly the mistake the feature exists to catch —
+will very probably not be caught. What it can catch is a word not recited at all, which
+the word matcher already reports.
+
+It does not make the model useless: it reads audio, and it distinguishes rules cleanly on
+correct recitation. It means the useful signal is at word granularity, and that judging
+individual ṣifāt needs alignment at the level of the letter rather than the word — which
+is the phoneme head, and unbuilt.
+
 **Chasing that tail found a tajweed bug.** The rules with no spike were idghām and iqlāb.
 Idghām was one rule covering all six of ي ر م ل و ن — but **idghām into ل and ر is *bilā
 ghunnah*: it carries no nasalisation at all**. The model was correctly reporting no nasal
