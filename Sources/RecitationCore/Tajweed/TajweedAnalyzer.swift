@@ -17,8 +17,16 @@ public enum TajweedRule: String, Sendable, Codable, CaseIterable {
     case qalqalah
     /// Nasalisation, two harakāt, on ن and م carrying shadda.
     case ghunnah
-    /// Assimilation of nūn sākinah / tanwīn into a following letter.
+    /// Assimilation of nūn sākinah / tanwīn into ي ن م و, carrying nasalisation.
     case idgham
+    /// Assimilation into ل or ر, which carries **no** nasalisation.
+    ///
+    /// A separate rule because it is one: idghām bilā ghunnah is defined by the absence
+    /// of the very thing idghām bi-ghunnah requires. Treating the six letters as one rule
+    /// meant expecting nasalisation on ل and ر, so a reciter who correctly gave none was
+    /// measured as having failed — and the model, correctly reporting no nasal, supplied
+    /// the evidence against them.
+    case idghamBilaGhunnah
     /// Nūn sākinah / tanwīn converted to a mīm sound before ب.
     case iqlab
     /// Nūn sākinah / tanwīn held lightly before the fifteen letters.
@@ -46,7 +54,8 @@ public enum TajweedRule: String, Sendable, Codable, CaseIterable {
         case .maddLazim: return "Madd lazim"
         case .qalqalah: return "Qalqalah"
         case .ghunnah: return "Ghunnah"
-        case .idgham: return "Idgham"
+        case .idgham: return "Idgham (with ghunnah)"
+        case .idghamBilaGhunnah: return "Idgham (without ghunnah)"
         case .iqlab: return "Iqlab"
         case .ikhfa: return "Ikhfa"
         case .izhar: return "Izhar"
@@ -64,7 +73,8 @@ public enum TajweedRule: String, Sendable, Codable, CaseIterable {
         case .maddLazim: return "مد لازم"
         case .qalqalah: return "قلقلة"
         case .ghunnah: return "غنة"
-        case .idgham: return "إدغام"
+        case .idgham: return "إدغام بغنة"
+        case .idghamBilaGhunnah: return "إدغام بلا غنة"
         case .iqlab: return "إقلاب"
         case .ikhfa: return "إخفاء"
         case .izhar: return "إظهار"

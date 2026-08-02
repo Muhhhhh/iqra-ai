@@ -75,15 +75,21 @@ struct ReviewPanel: View {
                         }
                     }
 
-                    if !model.tajweedNotes.isEmpty {
-                        Section {
-                            ForEach(model.tajweedNotes) { note in
-                                TajweedRow(note: note)
-                            }
-                        } header: {
-                            Text("Tajweed — listen again")
-                        } footer: {
-                            Text("Measured against the pace of your own recitation. Uncalibrated and unreviewed — a prompt to listen back, not a correction.")
+                    // Always present, even with nothing to say. Silence from a checker
+                    // that is switched off looks exactly like silence from one that
+                    // found nothing wrong — and for a long time it was in fact silence
+                    // from one whose model output was unreadable. The reciter should be
+                    // able to tell those three apart without reading the source.
+                    Section {
+                        ForEach(model.tajweedNotes) { note in
+                            TajweedRow(note: note)
+                        }
+                        TajweedStatusRow(model: model)
+                    } header: {
+                        Text(model.tajweedNotes.isEmpty ? "Tajweed" : "Tajweed — listen again")
+                    } footer: {
+                        if !model.tajweedNotes.isEmpty {
+                            Text("A prompt to listen back, not a correction. About one in nine correctly recited rules is still questioned, and none of this has been reviewed by a qārī.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -315,6 +321,54 @@ private struct InsertionRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 3)
+    }
+}
+
+/// What the tajweed checker is doing right now, in one line.
+private struct TajweedStatusRow: View {
+    let model: RecitationSessionModel
+    @State private var settings = AppSettings.shared
+    @State private var library = QuranLibrary.shared
+
+    /// Rules on this page the audio checker is able to judge at all. Madd is measured by
+    /// duration, and idghām bi-ghunnah and iqlāb are excluded — see the calibration in
+    /// the README.
+    private var judgeable: Int {
+        library.tajweedSpansByWord.values.reduce(0) { total, spans in
+            total + spans.count { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
+        }
+    }
+
+    var body: some View {
+        Group {
+            if !settings.analysesTajweedAudio {
+                row("Not checking your recitation", detail: "Turn it on in Settings → Tajweed.", symbol: "circle.slash")
+            } else if !settings.hasNeuralTajweed {
+                row("Duration only", detail: "No Muaalem model installed, so only madd length is checked.", symbol: "exclamationmark.triangle")
+            } else if model.segments.isEmpty && model.tajweedNotes.isEmpty {
+                row("Ready", detail: "\(judgeable) rules on this page can be checked. Results appear when you stop.", symbol: "waveform.badge.magnifyingglass")
+            } else if model.tajweedNotes.isEmpty {
+                row("Nothing questioned", detail: "\(judgeable) rules on this page were eligible; none read as absent.", symbol: "checkmark.circle")
+            } else {
+                row("\(model.tajweedNotes.count) to listen back to", detail: "of \(judgeable) eligible rules on this page.", symbol: "waveform.badge.magnifyingglass")
+            }
+        }
+    }
+
+    private func row(_ title: String, detail: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption.weight(.medium))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

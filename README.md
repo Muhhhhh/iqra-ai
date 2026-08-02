@@ -450,11 +450,22 @@ iqlāb are excluded from audio checking entirely: they show no spike at all in a
 occurrences a qārī recited correctly, which is a property of the model rather than of the
 recitation. Both are still detected in the text and coloured on the page.
 
-**Even so it stays off by default.** At the current thresholds, 11.6% of correct
-occurrences of the rules it does judge would be questioned — about one in nine. The
-remaining tail is occurrences where the model spikes nowhere in the word, most likely
-because the word's timing is wrong or the rule crosses into the next word, and no
-threshold fixes that. What is still missing before this could be trusted:
+**Chasing that tail found a tajweed bug.** The rules with no spike were idghām and iqlāb.
+Idghām was one rule covering all six of ي ر م ل و ن — but **idghām into ل and ر is *bilā
+ghunnah*: it carries no nasalisation at all**. The model was correctly reporting no nasal
+sound, and the app was reading that as a failure, so a reciter who gave exactly the right
+articulation would have been questioned. Split into two rules, idghām bilā ghunnah reads
+at 99.9% (p1) — the cleanest signal of any rule measured.
+
+The rest of idghām's tail is a junction effect, and real: a tanwīn or sākin nūn takes its
+ruling from the first letter of the **next** word, and the nasalisation is articulated
+across the boundary, after the triggering word has ended. Extending the search window
+200 ms past the word takes idghām bi-ghunnah's p25 from 22.8% to 82.5%; further gains
+nothing. Iqlāb stays flat at every window and remains unexplained — 12 samples, so the
+next step there is more data rather than a theory.
+
+**Even so it stays off by default.** At the current thresholds, 11.2% of correct
+occurrences of the rules it judges would be questioned — about one in nine. What is still missing before this could be trusted:
 
 - **Recitation with known errors in it.** Everything above is one-sided.
 - **A qārī.** Nothing here has been reviewed by one.

@@ -108,13 +108,33 @@ struct TajweedDetectorTests {
 
     @Test("Tanwīn behaves like nūn sākinah across the word boundary")
     func tanwinFollowsTheSameRules() {
-        // هُدًى لِّلْمُتَّقِينَ — tanwīn then lām: idghām.
+        // هُدًى لِّلْمُتَّقِينَ — tanwīn then lām. Lām and rā' assimilate *without*
+        // nasalisation, which is a different rule from the other four letters and not a
+        // detail: expecting a ghunnah here marks a correct recitation as a mistake.
         let target = RecitationTarget(verse: Verse(
             reference: VerseReference(surah: 2, ayah: 2),
             text: "هُدًى لِّلْمُتَّقِينَ"
         ))
         let found = TajweedRuleDetector.occurrences(in: target)
-        #expect(found.contains { $0.rule == .idgham })
+        #expect(found.contains { $0.rule == .idghamBilaGhunnah })
+        #expect(!found.contains { $0.rule == .idgham })
+    }
+
+    @Test("Idgham into ينمو carries ghunnah, into لر it does not")
+    func idghamSplitsByGhunnah() {
+        // مَن يَقُولُ — nūn sākinah then yā': idghām bi-ghunnah.
+        let withGhunnah = TajweedRuleDetector.occurrences(in: RecitationTarget(verse: Verse(
+            reference: VerseReference(surah: 2, ayah: 8),
+            text: "مَن يَقُولُ"
+        )))
+        #expect(withGhunnah.contains { $0.rule == .idgham })
+
+        // مِن رَّبِّهِمْ — nūn sākinah then rā': idghām bilā ghunnah.
+        let without = TajweedRuleDetector.occurrences(in: RecitationTarget(verse: Verse(
+            reference: VerseReference(surah: 2, ayah: 5),
+            text: "مِن رَّبِّهِمْ"
+        )))
+        #expect(without.contains { $0.rule == .idghamBilaGhunnah })
     }
 
     // MARK: - Madd

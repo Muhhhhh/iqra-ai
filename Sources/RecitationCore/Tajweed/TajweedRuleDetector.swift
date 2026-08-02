@@ -79,9 +79,14 @@ public enum TajweedRuleDetector {
         "\u{0621}", "\u{0623}", "\u{0625}", "\u{0624}", "\u{0626}", "\u{0622}",
         "\u{0647}", "\u{0639}", "\u{062D}", "\u{063A}", "\u{062E}",
     ]
-    /// ي ر م ل و ن — assimilation.
+    /// ي ر م ل و ن — assimilation. Split by whether it carries ghunnah, because that
+    /// is the whole difference between the two rules.
     private static let idghamLetters: Set<Unicode.Scalar> = [
         "\u{064A}", "\u{0631}", "\u{0645}", "\u{0644}", "\u{0648}", "\u{0646}",
+    ]
+    /// ل and ر: assimilation *without* nasalisation.
+    private static let idghamBilaGhunnahLetters: Set<Unicode.Scalar> = [
+        "\u{0644}", "\u{0631}",
     ]
     /// Every hamza carrier.
     private static let hamzaLetters: Set<Unicode.Scalar> = [
@@ -203,7 +208,10 @@ public enum TajweedRuleDetector {
                     } else if izharLetters.contains(following) {
                         make(.izhar, span)
                     } else if idghamLetters.contains(following) {
-                        make(.idgham, span, idghamLetters.contains(following)
+                        make(
+                            idghamBilaGhunnahLetters.contains(following) ? .idghamBilaGhunnah : .idgham,
+                            span,
+                            idghamLetters.contains(following)
                              && (following == "\u{0644}" || following == "\u{0631}") ? nil : 2)
                     } else {
                         make(.ikhfa, span, 2)

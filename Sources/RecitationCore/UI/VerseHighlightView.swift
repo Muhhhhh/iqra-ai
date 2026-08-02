@@ -80,6 +80,7 @@ public enum TajweedStyle {
         case .ghunnah: return Color(red: 0.20, green: 0.55, blue: 0.35)
         case .qalqalah: return Color(red: 0.25, green: 0.45, blue: 0.80)
         case .idgham: return Color(red: 0.45, green: 0.35, blue: 0.70)
+        case .idghamBilaGhunnah: return Color(red: 0.55, green: 0.42, blue: 0.78)
         case .ikhfa: return Color(red: 0.55, green: 0.40, blue: 0.60)
         case .iqlab: return Color(red: 0.30, green: 0.55, blue: 0.65)
         case .izhar: return Color(red: 0.40, green: 0.45, blue: 0.45)
@@ -98,6 +99,7 @@ public enum TajweedStyle {
         case .qalqalah: return 60
         case .iqlab: return 50
         case .idgham: return 45
+        case .idghamBilaGhunnah: return 44
         case .ikhfa: return 40
         case .izhar: return 30
         case .maddAsli: return 20

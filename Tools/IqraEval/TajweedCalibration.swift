@@ -54,6 +54,13 @@ enum TajweedCalibration {
         /// therefore measures "how much of this word is not a ghunnah", which is high for
         /// every word ever recited, correctly or not.
         let peak: Double
+        /// The same peak, with the search window extended past the end of the word.
+        ///
+        /// Several rules are *junction* rules: a tanwīn or a sākin nūn takes its ruling
+        /// from the first letter of the **next** word, and the nasalisation that ruling
+        /// requires is articulated across the boundary. Looking only inside the word that
+        /// triggered the rule can therefore miss the very sound being checked.
+        let peakByPadding: [Double]
         let frames: Int
     }
 
@@ -199,6 +206,9 @@ enum TajweedCalibration {
         report(samples: samples, skips: skips, occurrencesSeen: occurrencesSeen, ayat: ayatUsed)
     }
 
+    /// Trailing extensions of the search window, in seconds.
+    static let paddings: [TimeInterval] = [0, 0.1, 0.2, 0.3, 0.5]
+
     static func collect(
         occurrences: [TajweedOccurrence],
         observed: MuaalemTajweedAnalyzer.Observation,
@@ -234,6 +244,19 @@ enum TajweedCalibration {
 
             let presentIndex = expectation.head.presentIndex
             let absentIndex = expectation.head.absentIndex
+
+            func window(extendingBy padding: TimeInterval) -> [Double] {
+                let extra = Int((padding / observed.frameDuration).rounded())
+                let end = min(series.count, upper + extra)
+                guard end > lower else { return [] }
+                var values: [Double] = []
+                for frame in series[lower..<end] where frame.count > max(presentIndex, absentIndex) {
+                    guard frame[0] < 0.5 else { continue }
+                    values.append(expectation.present ? frame[presentIndex] : frame[absentIndex])
+                }
+                return values
+            }
+
             var wanted: [Double] = []
             var against: [Double] = []
             for frame in series[lower..<upper] where frame.count > max(presentIndex, absentIndex) {
@@ -257,6 +280,7 @@ enum TajweedCalibration {
                     sustained: bestSustained(wanted, window: minimumFrames),
                     contrary: against.reduce(0, +) / Double(against.count),
                     peak: wanted.max() ?? 0,
+                    peakByPadding: Self.paddings.map { window(extendingBy: $0).max() ?? 0 },
                     frames: wanted.count
                 )
             )
@@ -344,6 +368,21 @@ enum TajweedCalibration {
 
         // What the shipped thresholds would do to correct recitation.
         let options = MuaalemTajweedAnalyzer.Options()
+        // Does looking past the end of the word recover the occurrences with no spike?
+        print("Peak by how far the window extends past the word (junction rules articulate")
+        print("across the boundary, so the sound may not be inside the word that triggers it).")
+        print("")
+        print("  rule            " + Self.paddings.map { "  +\(Int($0 * 1000))ms" }.joined())
+        for rule in byRule.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let group = byRule[rule]!
+            let cells = (0..<Self.paddings.count).map { index -> String in
+                let values = group.map { $0.peakByPadding[index] }.sorted()
+                return " " + pct(percentile(values, 0.25))
+            }
+            print("  \(rule.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)) p25" + cells.joined())
+        }
+        print("")
+
         // Exactly what the analyzer does: peak-based, and only the rules it judges.
         let judged = samples.filter { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
         let contraryPeak = { (sample: Sample) in max(sample.contrary, 1 - sample.peak) }

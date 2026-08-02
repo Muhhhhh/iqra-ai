@@ -49,6 +49,15 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         /// Frames of evidence needed. One frame is 40 ms; a ghunnah is two harakāt, so a
         /// genuine one spans several.
         public var minimumFrames: Int
+        /// How far past the end of a word to keep looking for its rule's evidence.
+        ///
+        /// The nūn-sākinah rules are *junction* rules: a tanwīn or sākin nūn takes its
+        /// ruling from the first letter of the **next** word, and the nasalisation that
+        /// ruling calls for is articulated across the boundary — after the word that
+        /// triggered it has ended. Measured on Al-Husary, the 25th percentile of the
+        /// ghunnah spike for idghām bi-ghunnah is 22.8% inside the word alone and 82.5%
+        /// with 200 ms more; beyond that it stops improving, so 200 ms it is.
+        public var junctionWindow: TimeInterval
         /// Seconds of audio per inference window, matching the converted model.
         public var windowSeconds: Double
 
@@ -59,8 +68,10 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
             presenceThreshold: Double = 0.02,
             contraryThreshold: Double = 0.90,
             minimumFrames: Int = 3,
+            junctionWindow: TimeInterval = 0.2,
             windowSeconds: Double = 10
         ) {
+            self.junctionWindow = junctionWindow
             self.presenceThreshold = presenceThreshold
             self.contraryThreshold = contraryThreshold
             self.minimumFrames = minimumFrames
@@ -328,7 +339,12 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
     /// Deliberately a short list. See `Options.presenceThreshold` for the measurements:
     /// idghām and iqlāb produce no spike in a quarter of occurrences that a qārī recited
     /// correctly, which is a property of the model, not of the recitation.
-    public static let audioVerifiable: Set<TajweedRule> = [.ghunnah, .ikhfa, .qalqalah, .izhar]
+    public static let audioVerifiable: Set<TajweedRule> = [
+        .ghunnah, .ikhfa, .qalqalah, .izhar, .idghamBilaGhunnah,
+    ]
+
+    /// Rules whose sound is articulated across the boundary into the next word.
+    static let junctionRules: Set<TajweedRule> = [.idgham, .idghamBilaGhunnah, .ikhfa, .iqlab, .izhar]
 
     /// Which head decides a rule, and whether the attribute should be present.
     ///
@@ -339,6 +355,9 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         switch rule {
         case .ghunnah, .ikhfa, .iqlab: return (.ghonna, true)
         case .idgham: return (.ghonna, true)
+        // Defined by the absence of nasalisation, so the head is read the same way round
+        // as iẓhār — and iẓhār is the rule this model reads most cleanly of all.
+        case .idghamBilaGhunnah: return (.ghonna, false)
         case .izhar: return (.ghonna, false)
         case .qalqalah: return (.qalqla, true)
         case .maddAsli, .maddWajibMuttasil, .maddJaizMunfasil, .maddLazim: return nil
@@ -364,7 +383,12 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
             guard let series = observed.probabilities[expectation.head.rawValue] else { continue }
 
             let first = Int(((range.lowerBound - observed.startTime) / observed.frameDuration).rounded(.down))
-            let last = Int(((range.upperBound - observed.startTime) / observed.frameDuration).rounded(.up))
+            // Junction rules are allowed to look a little past the word; the others are
+            // not, since their evidence is inside the word by definition.
+            let junction = Self.junctionRules.contains(occurrence.rule) ? options.junctionWindow : 0
+            let last = Int((
+                (range.upperBound + junction - observed.startTime) / observed.frameDuration
+            ).rounded(.up))
             let lower = max(0, first)
             let upper = min(series.count, last)
             guard upper - lower >= options.minimumFrames else { continue }
