@@ -556,12 +556,22 @@ chasing why a halved elongation was never caught, three of them the same mistake
 
 After all four: 81 elongations examined, 1 false flag, and 2 of 42 halved madds caught.
 
-That last number is the honest state, with one caveat that matters. **The negative may not
-represent the mistake.** Cutting audio out of a vowel leaves a discontinuity; a reciter
-who does not hold a madd produces a smoothly shorter vowel. Time-compression rather than
-splicing would be the faithful test, and until that exists this measurement cannot
-separate "the detector does not work" from "the test does not resemble the error". The
-feature stays off either way.
+The caveat on that number has since been settled. Splicing audio out of a vowel leaves a
+discontinuity, while a reciter who does not hold a madd produces a smoothly shorter
+vowel — so the negative might have been testing the wrong thing. `timeCompress` builds the
+faithful version instead: WSOLA, overlapping windows read further apart than they are
+written back, so the vowel plays through faster with its pitch and timbre intact.
+
+Against that negative: **1 of 42**. Essentially unchanged from the spliced 2 of 42. The
+test was not the problem — the detector does not work, and now that is measured rather
+than suspected.
+
+So both routes to audio tajweed have now been measured and both fail, for different
+reasons: the ṣifah heads predict from context instead of reporting what they heard, and
+duration measured through forced alignment does not track the duration actually recited.
+Audio tajweed verification stays off, and the honest summary is that this app checks
+*which words* were recited, not *how*. Word-level rule colouring on the page remains
+exact, because it is derived from the text and does not depend on any of this.
 
 **Superseded:** `AlignedTajweedAnalyzer` measures each
 elongation against the reciter's own two-count madds. It is quiet on correct recitation —

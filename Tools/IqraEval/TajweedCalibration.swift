@@ -388,6 +388,77 @@ enum TajweedCalibration {
         return best
     }
 
+    /// Shorten a stretch of audio without cutting it — the mistake as a reciter makes it.
+    ///
+    /// Splicing audio out of a vowel leaves a discontinuity, and a reciter who does not
+    /// hold a madd does not produce a discontinuity: they produce a smoothly shorter
+    /// vowel. Measuring against a spliced negative could not tell "the detector does not
+    /// work" from "the test does not resemble the mistake", so this makes the faithful
+    /// version.
+    ///
+    /// WSOLA: overlapping windows are taken from the source at a wider spacing than they
+    /// are written back at, so the sound plays through faster while its pitch and timbre
+    /// stay put. Each window's read position is nudged within a small search range to
+    /// whichever offset best matches what has already been written, which is what keeps
+    /// the periods lining up instead of phasing against each other.
+    static func timeCompress(
+        _ chunk: AudioChunk,
+        range: Range<Int>,
+        factor: Double
+    ) -> AudioChunk? {
+        let lower = max(0, range.lowerBound)
+        let upper = min(chunk.samples.count, range.upperBound)
+        guard upper - lower > 1600, factor > 0.1, factor < 1 else { return nil }
+
+        let region = Array(chunk.samples[lower..<upper])
+        let window = 480                       // 30 ms at 16 kHz
+        let synthesisHop = window / 2
+        let analysisHop = Int(Double(synthesisHop) / factor)
+        let search = 160                       // ±10 ms to find the best join
+        guard analysisHop > synthesisHop else { return nil }
+
+        let hann = (0..<window).map { 0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(window - 1)) }
+        var output = [Float](repeating: 0, count: Int(Double(region.count) * factor) + window)
+        var weight = [Double](repeating: 0, count: output.count)
+
+        var readAt = 0
+        var writeAt = 0
+        while readAt + window < region.count, writeAt + window < output.count {
+            // Nudge the read position to whichever offset best continues what is written.
+            var bestOffset = 0
+            if writeAt > 0 {
+                var bestScore = -Double.greatestFiniteMagnitude
+                for offset in -search...search {
+                    let start = readAt + offset
+                    guard start >= 0, start + synthesisHop < region.count else { continue }
+                    var score = 0.0
+                    for index in 0..<synthesisHop where writeAt + index < output.count {
+                        score += Double(output[writeAt + index]) * Double(region[start + index])
+                    }
+                    if score > bestScore { bestScore = score; bestOffset = offset }
+                }
+            }
+            let start = max(0, min(region.count - window, readAt + bestOffset))
+            for index in 0..<window {
+                output[writeAt + index] += Float(Double(region[start + index]) * hann[index])
+                weight[writeAt + index] += hann[index]
+            }
+            readAt += analysisHop
+            writeAt += synthesisHop
+        }
+
+        let produced = min(writeAt + window, output.count)
+        var compressed = [Float](repeating: 0, count: produced)
+        for index in 0..<produced {
+            compressed[index] = weight[index] > 0.01 ? output[index] / Float(weight[index]) : output[index]
+        }
+
+        var samples = Array(chunk.samples[0..<lower])
+        samples.append(contentsOf: compressed)
+        samples.append(contentsOf: chunk.samples[upper...])
+        return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
     // MARK: - Goodness of pronunciation
 
     /// Does alignment confidence collapse where the reciter said something else?
@@ -606,12 +677,11 @@ enum TajweedCalibration {
                                 + Double(last.frames.upperBound) * observedForMadd.frameDuration
                             let rate = AudioChunk.canonicalSampleRate
                             // Take out the middle half of the elongation.
-                            let cutFrom = Int((start + (end - start) * 0.25) * rate)
-                            let cutTo = Int((start + (end - start) * 0.75) * rate)
-                            if cutFrom > 0, cutTo <= audio.samples.count, cutTo > cutFrom {
-                                var shortened = Array(audio.samples[0..<cutFrom])
-                                shortened.append(contentsOf: audio.samples[cutTo...])
-                                let chunk = AudioChunk(samples: shortened, startTime: audio.startTime)
+                            // Held for half as long, smoothly — not spliced.
+                            let from = Int(start * rate)
+                            let to = Int(end * rate)
+                            if from >= 0, to <= audio.samples.count, to > from,
+                               let chunk = timeCompress(audio, range: from..<to, factor: 0.5) {
                                 maddAttempted += 1
                                 let after = await analyzer.analyze(segments: [segment(chunk)], target: target)
                                 if after.count > clean.count { maddCaught += 1 }
