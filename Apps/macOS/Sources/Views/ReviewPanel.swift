@@ -330,9 +330,7 @@ private struct TajweedStatusRow: View {
     @State private var settings = AppSettings.shared
     @State private var library = QuranLibrary.shared
 
-    /// Rules on this page the audio checker is able to judge at all. Madd is measured by
-    /// duration, and idghām bi-ghunnah and iqlāb are excluded — see the calibration in
-    /// the README.
+    /// Rules on this page the audio checker could judge if every word were recognised.
     private var judgeable: Int {
         library.tajweedSpansByWord.values.reduce(0) { total, spans in
             total + spans.count { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
@@ -346,11 +344,37 @@ private struct TajweedStatusRow: View {
             } else if !settings.hasNeuralTajweed {
                 row("Duration only", detail: "No Muaalem model installed, so only madd length is checked.", symbol: "exclamationmark.triangle")
             } else if model.segments.isEmpty && model.tajweedNotes.isEmpty {
-                row("Ready", detail: "\(judgeable) rules on this page can be checked. Results appear when you stop.", symbol: "waveform.badge.magnifyingglass")
-            } else if model.tajweedNotes.isEmpty {
-                row("Nothing questioned", detail: "\(judgeable) rules on this page were eligible; none read as absent.", symbol: "checkmark.circle")
+                row(
+                    "Ready",
+                    detail: "\(judgeable) rules on this page could be checked, if every word is recognised. Results appear when you stop.",
+                    symbol: "waveform.badge.magnifyingglass"
+                )
             } else {
-                row("\(model.tajweedNotes.count) to listen back to", detail: "of \(judgeable) eligible rules on this page.", symbol: "waveform.badge.magnifyingglass")
+                // The count that matters is how many rules were actually looked at. A
+                // rule is only examined when its word was recognised well enough to know
+                // when it was recited, and most are not — reporting "nothing questioned"
+                // against the page's total would credit the checker with inspecting text
+                // it never heard.
+                let coverage = model.tajweedCoverage
+                let inspected = "\(coverage.examined) of \(max(coverage.judgeable, judgeable)) checkable rules were actually examined"
+                let why = coverage.skippedWithoutTiming > 0
+                    ? " — the rest sat on words the recogniser did not place, so there was no stretch of audio to read."
+                    : "."
+                if coverage.examined == 0 {
+                    row(
+                        "Nothing was examined",
+                        detail: "No rule sat on a word confidently enough recognised to time. This says nothing about your tajweed.",
+                        symbol: "questionmark.circle"
+                    )
+                } else if model.tajweedNotes.isEmpty {
+                    row("Nothing questioned", detail: inspected + why, symbol: "checkmark.circle")
+                } else {
+                    row(
+                        "\(model.tajweedNotes.count) to listen back to",
+                        detail: inspected + why,
+                        symbol: "waveform.badge.magnifyingglass"
+                    )
+                }
             }
         }
     }

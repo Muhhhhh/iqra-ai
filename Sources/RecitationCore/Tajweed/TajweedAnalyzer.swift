@@ -170,11 +170,55 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
 ///
 /// Implementations must be conservative: when in doubt, say nothing. Thresholds are
 /// to be calibrated against expert reciters and reviewed by a qārī before shipping.
+/// How much of the passage's tajweed was actually examined.
+///
+/// Reported because "nothing questioned" is not the same claim as "everything was
+/// checked and passed", and only one of those is usually true. A rule is only examined
+/// when its word was recognised well enough to know *when* it was recited; at the word
+/// error rates this pipeline achieves, most rules on a page are never looked at. Saying
+/// "nothing questioned" without saying how little was inspected would be the same class
+/// of false reassurance as a screen of unmarked text implying an approved recitation.
+public struct TajweedCoverage: Sendable, Equatable {
+    /// Rules the text requires in this passage.
+    public var required: Int
+    /// Rules this analyzer is capable of judging from audio at all.
+    public var judgeable: Int
+    /// Rules actually measured — word recognised, timing known, enough audio.
+    public var examined: Int
+    /// Judgeable rules skipped because the word was not recognised, so there is no
+    /// trustworthy stretch of audio to read.
+    public var skippedWithoutTiming: Int
+    public var questioned: Int
+
+    public init(
+        required: Int = 0,
+        judgeable: Int = 0,
+        examined: Int = 0,
+        skippedWithoutTiming: Int = 0,
+        questioned: Int = 0
+    ) {
+        self.required = required
+        self.judgeable = judgeable
+        self.examined = examined
+        self.skippedWithoutTiming = skippedWithoutTiming
+        self.questioned = questioned
+    }
+
+    public static let none = TajweedCoverage()
+}
+
 public protocol TajweedAnalyzer: Sendable {
     func analyze(
         segments: [AlignedAudioSegment],
         target: RecitationTarget
     ) async -> [TajweedNote]
+
+    /// What the last `analyze` was able to look at.
+    func coverage() async -> TajweedCoverage
+}
+
+extension TajweedAnalyzer {
+    public func coverage() async -> TajweedCoverage { .none }
 }
 
 /// v1 default: analyses nothing.

@@ -14,6 +14,8 @@ public final class RecitationSessionModel {
     public private(set) var words: [WordEvaluation] = []
     public private(set) var insertions: [InsertedWord] = []
     public private(set) var tajweedNotes: [TajweedNote] = []
+    /// How much of the passage's tajweed was actually examined — see `TajweedCoverage`.
+    public private(set) var tajweedCoverage: TajweedCoverage = .none
     public private(set) var transcript: String = ""
     public private(set) var level: Float = 0
     /// True when the input has been clipping recently.
@@ -59,6 +61,7 @@ public final class RecitationSessionModel {
         words = TokenAligner().align(heard: [], against: target, isFinal: false).words
         insertions = []
         tajweedNotes = []
+        tajweedCoverage = .none
         transcript = ""
         segments = []
         errorMessage = nil
@@ -74,6 +77,7 @@ public final class RecitationSessionModel {
         errorMessage = nil
         insertions = []
         tajweedNotes = []
+        tajweedCoverage = .none
         transcript = ""
         segments = []
 
@@ -110,6 +114,7 @@ public final class RecitationSessionModel {
     private func clearResults() {
         insertions = []
         tajweedNotes = []
+        tajweedCoverage = .none
         transcript = ""
         segments = []
         level = 0
@@ -224,6 +229,7 @@ public final class RecitationSessionModel {
             insertions = result.alignment.insertions
             segments = result.segments
             tajweedNotes = result.tajweedNotes
+            tajweedCoverage = result.tajweedCoverage
 
         case .failed(let failure):
             errorMessage = "\(failure.stage.rawValue): \(failure.message)"

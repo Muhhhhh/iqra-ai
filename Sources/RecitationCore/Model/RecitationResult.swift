@@ -49,13 +49,17 @@ public struct RecitationResult: Sendable, Equatable {
     public let segments: [AlignedAudioSegment]
     /// Advisory tajweed notes. Always empty in v1 (`NoOpTajweedAnalyzer`).
     public let tajweedNotes: [TajweedNote]
+    /// How much of the passage's tajweed was actually examined to produce those notes.
+    public let tajweedCoverage: TajweedCoverage
 
     public init(
         target: RecitationTarget,
         alignment: AlignmentResult,
         segments: [AlignedAudioSegment],
-        tajweedNotes: [TajweedNote] = []
+        tajweedNotes: [TajweedNote] = [],
+        tajweedCoverage: TajweedCoverage = .none
     ) {
+        self.tajweedCoverage = tajweedCoverage
         self.target = target
         self.alignment = alignment
         self.segments = segments

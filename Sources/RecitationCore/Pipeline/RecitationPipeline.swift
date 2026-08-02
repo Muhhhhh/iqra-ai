@@ -148,7 +148,8 @@ public actor RecitationPipeline {
                 target: target,
                 alignment: alignment,
                 segments: segments,
-                tajweedNotes: notes
+                tajweedNotes: notes,
+                tajweedCoverage: await components.tajweed.coverage()
             )
         ))
         transition(to: .stopped)

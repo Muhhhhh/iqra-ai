@@ -149,21 +149,37 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         target: RecitationTarget
     ) async -> [TajweedNote] {
         let occurrences = TajweedRuleDetector.occurrences(in: target)
+        let judgeable = occurrences.count { Self.audioVerifiable.contains($0.rule) }
+        lastCoverage = TajweedCoverage(required: occurrences.count, judgeable: judgeable)
         guard !occurrences.isEmpty, !segments.isEmpty else { return [] }
         do { try loadModel() } catch { return [] }
         guard model != nil else { return [] }
 
+        var examined = 0
         var notes: [TajweedNote] = []
         for segment in segments {
             guard let observed = try? probabilities(for: segment.audio) else { continue }
-            notes += verify(
+            let outcome = verify(
                 occurrences: occurrences,
                 against: observed,
                 segment: segment
             )
+            notes += outcome.notes
+            examined += outcome.examined
         }
+        lastCoverage = TajweedCoverage(
+            required: occurrences.count,
+            judgeable: judgeable,
+            examined: examined,
+            skippedWithoutTiming: max(0, judgeable - examined),
+            questioned: notes.count
+        )
         return notes.sorted { $0.targetIndex < $1.targetIndex }
     }
+
+    private var lastCoverage: TajweedCoverage = .none
+
+    public func coverage() async -> TajweedCoverage { lastCoverage }
 
     // MARK: - Inference
 
@@ -370,13 +386,14 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
         occurrences: [TajweedOccurrence],
         against observed: Observation,
         segment: AlignedAudioSegment
-    ) -> [TajweedNote] {
+    ) -> (notes: [TajweedNote], examined: Int) {
         var timings: [Int: ClosedRange<TimeInterval>] = [:]
         for word in segment.words {
             if let range = word.timeRange { timings[word.targetIndex] = range }
         }
 
         var notes: [TajweedNote] = []
+        var examined = 0
         for occurrence in occurrences {
             guard let expectation = Self.expectation(for: occurrence.rule) else { continue }
             guard let range = timings[occurrence.targetIndex] else { continue }
@@ -417,6 +434,7 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
                 counted += 1
             }
             guard counted >= options.minimumFrames else { continue }
+            examined += 1
 
             let wanted = expectation.present ? presence : contrary
             let against = expectation.present ? contrary : presence
@@ -434,7 +452,7 @@ public actor MuaalemTajweedAnalyzer: TajweedAnalyzer {
                 )
             )
         }
-        return notes
+        return (notes, examined)
     }
 
     private static func message(for occurrence: TajweedOccurrence, expectingPresence: Bool) -> String {

@@ -15,6 +15,8 @@ struct ContentView: View {
     @State private var inspectedWord: InspectedWord?
     /// Guards against turning twice off one burst of alignment updates.
     @State private var isTurningPage = false
+    /// When the last automatic turn happened, so a burst cannot cascade through pages.
+    @State private var lastAutoTurn: Date?
     /// The page currently loaded into the session, so the one being left can be named.
     @State private var loadedPage: Int?
     /// The marks from the page just left, kept until another page displaces it.
@@ -195,6 +197,7 @@ struct ContentView: View {
         selectedWord = nil
         pageTurnTask?.cancel()
         isTurningPage = false
+        lastAutoTurn = nil
         isShowingHeldMarks = false
         model.retry()
     }
@@ -262,9 +265,26 @@ struct ContentView: View {
         guard settings.autoTurnPage,
               model.isRunning,
               !isTurningPage,
-              library.canGoForward,
-              model.hasReachedEnd
+              library.canGoForward
         else { return }
+
+        // The verdicts must belong to the page on screen. Turning the page hands the
+        // session a new passage, but an alignment for the *old* one can still be in
+        // flight and arrive afterwards — and since it ended at the old page's last word,
+        // it satisfies "reached the end" immediately and turns again. Each turn then
+        // releases the next stale update, and the muṣḥaf runs away several pages from
+        // where the reciter actually is.
+        guard let page = library.page,
+              let lastRecited = model.words.last(where: { $0.status != .notYetRecited }),
+              page.verses.contains(lastRecited.reference)
+        else { return }
+
+        // A second guard on the same failure, for the case where a stale alignment does
+        // happen to fall inside the new page: a reciter cannot finish two pages in a
+        // couple of seconds, so a turn that soon is the pipeline talking, not them.
+        if let lastAutoTurn, Date().timeIntervalSince(lastAutoTurn) < 3 { return }
+
+        guard model.hasReachedEnd else { return }
 
         isTurningPage = true
         // Settle before turning. The page should not move the instant the closing word
@@ -277,6 +297,7 @@ struct ContentView: View {
                 isTurningPage = false
                 return
             }
+            lastAutoTurn = Date()
             library.goToPage(library.currentPage + 1)
         }
     }
