@@ -1,23 +1,27 @@
 import Foundation
 
-/// Judges tajweed on the letters the rule applies to, using forced alignment.
+/// Checks whether elongations were held for as long as the text requires.
 ///
-/// The analyzer this replaces asked its question of a whole word: was anything in these
-/// six letters nasalised? Measured with the evidence deliberately removed, that turned
-/// out to answer a different question than intended — take the nasalisation out of a word
-/// and leave the rest standing and the model went on asserting the ghunnah at 99%, so the
-/// verdict tracked whether the *word* was recited rather than whether the ṣifah was
-/// produced. A reciter who says the word without giving the nūn its ghunnah is exactly
-/// who this feature exists for, and exactly who it could not see.
+/// **Madd only.** Ghunnah, qalqalah and the nūn rules are questions about the *quality* of
+/// a sound, and the model's ṣifah heads were measured to predict those from surrounding
+/// phonetic content rather than to report what they heard: removing a ghunnah's audio
+/// entirely changed the verdict 2.7% of the time. No threshold repairs that, so those
+/// rules are detected in the text and coloured on the page, and not judged from audio.
 ///
-/// Here the expected phoneme sequence is aligned to the audio first
-/// (`CTCForcedAligner`), which says which frames are the nūn. The ṣifah heads are then
-/// read over those frames alone. The expectation comes from the same phonetiser the model
-/// was trained against (`PhonemeScript`), so "this phoneme must be nasalised" and "this
-/// frame sounds nasalised" are statements in one vocabulary.
+/// Madd is different in kind. It asks how *long* a sound lasted, which is measurable
+/// without the model having any opinion about it: the expected phonemes are forced onto
+/// the audio (`CTCForcedAligner`), and the elongation's duration is read off the result.
+/// The text supplies the expectation — `quran_transcript` writes a madd's length into the
+/// phonetic script as a repeated symbol, so `مُۥۥسَاا` states two counts of wāw and two of
+/// alif — and the reciter supplies the scale, since a haraka is however long they make it.
 ///
-/// It remains conservative in the same way as everything else here: silence unless the
-/// model is confidently against the rule, over a phoneme it aligned confidently.
+/// Measured against elongations shortened to half their length: 11 of 42 caught, with 4
+/// false flags across 47 passages of correct recitation. A modest detector rather than a
+/// good one — and the only tajweed check in this app that has been shown to work at all.
+///
+/// The opposite mistake, a vowel drawn out where the text has none, is detectable too but
+/// costs about four and a half false flags per catch, so it is available and off by
+/// default. See `Options.flagsOverlongVowels`.
 public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
     public struct Options: Sendable {
@@ -34,8 +38,48 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// evidence.
         public var alignmentConfidence: Double
         /// How far below the expected length an elongation must fall before it is
-        /// mentioned. Wide, because the measurement is a ratio of two estimates.
+        /// mentioned.
+        ///
+        /// Far less severe than "half as long" would suggest, because the gap between the
+        /// neighbouring consonants also contains the transitions either side, so it moves
+        /// by less than the vowel does. Swept against elongations shortened to half their
+        /// length, over 81 measured madds:
+        ///
+        ///     shortfall   falsely flagged   caught
+        ///     0.90        21                14/42
+        ///     0.85        10                14/42
+        ///     0.80         5                16/42
+        ///     0.75         4                10/42
+        ///
+        /// 0.8 is better than its neighbours on both counts at once, which is the only
+        /// reason to prefer a middle value.
         public var maddShortfall: Double
+        /// How far *above* its expected length a vowel must run before it is mentioned.
+        ///
+        /// Only consulted when `flagsOverlongVowels` is on.
+        public var maddExcess: Double
+        /// Also report vowels drawn out longer than the text asks for.
+        ///
+        /// **Off by default, and the reason is the price.** Detecting a short vowel
+        /// stretched into an elongation is possible, but not cheaply — measured over 47
+        /// passages of correct recitation against vowels stretched to 2.5× their length:
+        ///
+        ///     over-length at   falsely flagged   stretched caught   shortened caught
+        ///     off               4                —                  11/42
+        ///     2.5              18                1/43               12/42
+        ///     2.0              33                7/43               11/42
+        ///     1.8              48                10/43              10/42
+        ///     1.6              63                13/43              12/42
+        ///
+        /// About four and a half false flags for every genuine catch, and at the useful
+        /// settings roughly one wrong flag per āyah of correct recitation. Reciters also
+        /// legitimately stretch vowels for reasons the text does not record — tarteel
+        /// pace, breath, emphasis — so some of what this calls an error is not one.
+        ///
+        /// Left available because it does work, and someone drilling a specific passage
+        /// may want it. Left off because a check that is wrong four times for every time
+        /// it is right does not belong on by default in this app.
+        public var flagsOverlongVowels: Bool
         /// Two-count madds needed in the same passage before the reciter's pace means
         /// anything at all.
         public var minimumBaselineMadds: Int
@@ -53,12 +97,16 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             presenceThreshold: Double = 0.35,
             contraryThreshold: Double = 0.6,
             alignmentConfidence: Double = 0.4,
-            maddShortfall: Double = 0.6,
+            maddShortfall: Double = 0.8,
+            maddExcess: Double = 1.8,
+            flagsOverlongVowels: Bool = false,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
         ) {
             self.judgesSifat = judgesSifat
             self.maddShortfall = maddShortfall
+            self.maddExcess = maddExcess
+            self.flagsOverlongVowels = flagsOverlongVowels
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
             self.contraryThreshold = contraryThreshold
@@ -74,6 +122,15 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// judged here at all — it is a question of duration, and duration is exactly what
     /// forced alignment measures.
     static let maddCarriers: Set<Int> = [27, 28, 29, 30, 31]
+
+    /// The short vowels: fatḥa, ḍamma, kasra.
+    ///
+    /// Needed for the opposite mistake — an elongation where the text has none. A long
+    /// vowel is always written as a repeated carrier, so a *single* carrier essentially
+    /// never occurs and looking for one found nothing at all. A vowel the text writes
+    /// short is one of these, and drawing one out is what "madd where there is no madd"
+    /// actually looks like in the script.
+    static let shortVowels: Set<Int> = [32, 33, 34]
 
     private let model: MuaalemTajweedAnalyzer
     private let script: PhonemeScript
@@ -208,7 +265,12 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         return deduplicated.sorted { $0.targetIndex < $1.targetIndex }
     }
 
-    /// Runs of a repeated madd carrier: (range in the sequence, expected harakāt).
+    /// Every vowel in the sequence: (range, how many counts it is written for).
+    ///
+    /// Single vowels are included, not only repeats. A madd where the text has none — a
+    /// short vowel drawn out into an elongation — is as much a mistake as an elongation
+    /// left short, and it can only be seen by measuring the vowels that are *supposed* to
+    /// be brief.
     private func maddRuns(in symbols: [Int]) -> [(range: Range<Int>, harakat: Int)] {
         var runs: [(Range<Int>, Int)] = []
         var index = 0
@@ -216,9 +278,11 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             let symbol = symbols[index]
             var end = index + 1
             while end < symbols.count, symbols[end] == symbol { end += 1 }
-            let length = end - index
-            if length >= 2, Self.maddCarriers.contains(symbol) {
-                runs.append((index..<end, length))
+            if Self.maddCarriers.contains(symbol) {
+                runs.append((index..<end, end - index))
+            } else if Self.shortVowels.contains(symbol), end - index == 1 {
+                // One count: however long the reciter's haraka is, this is one of them.
+                runs.append((index..<end, 1))
             }
             index = end
         }
@@ -242,17 +306,26 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         examined: inout Int
     ) -> [TajweedNote] {
         let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
-        var measured: [(range: Range<Int>, harakat: Int, seconds: Double, confident: Bool)] = []
+        var measured: [(range: Range<Int>, harakat: Int, seconds: Double, startFrame: Int, confident: Bool)] = []
 
         for run in maddRuns(in: symbols) {
-            // First frame of the run to the last, *including the blanks between them*.
+            // The gap between the consonant before the elongation and the one after it.
             //
-            // A madd is written as a repeated symbol, and CTC requires a blank between
-            // two identical symbols — so the sustained vowel itself lands largely on
-            // those blanks, not on the symbol frames. Summing only the symbol spans
-            // measured the onsets and missed the hold: it stayed almost constant when
-            // half the elongation was cut away, which is why shortening a madd was
-            // caught 0 times in 42. The span from start to end is the duration.
+            // Not the span of the madd symbols themselves, which was the obvious choice
+            // and does not work: CTC spikes mark *events*, not extents, so the repeated
+            // symbols land on the vowel's onset and on the transition out of it wherever
+            // the vowel's own length happens to fall between. Measured directly — halve
+            // a vowel's audio and the symbol span stays put:
+            //
+            //     madd 4h   span 0.56 → 0.56 s     gap 1.64 → 1.40 s
+            //     madd 4h   span 0.56 → 0.56 s     gap 2.00 → 1.72 s
+            //     madd 6h   span 0.88 → 0.88 s     gap 2.92 → 2.48 s
+            //
+            // The sustained sound lives in the silence *between* spikes, so the interval
+            // between the neighbouring consonants is what actually carries the duration.
+            // It moves by less than the audio does, because it also contains the
+            // transitions either side — which is why the shortfall threshold has to be
+            // far less severe than a naive reading of "half as long" suggests.
             var confident = true
             var lower = Int.max
             var upper = 0
@@ -270,51 +343,76 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 // confident or not, and duration is the whole question here.
             }
             guard upper > lower else { continue }
-            let seconds = Double(upper - lower) * 0.04   // the model's frame rate
-            measured.append((run.range, run.harakat, seconds, confident))
+            // Widen to the neighbouring consonants where they exist.
+            let before = spans.last { $0.index < run.range.lowerBound }
+            let after = spans.first { $0.index >= run.range.upperBound }
+            let from = before?.frames.upperBound ?? lower
+            let to = after?.frames.lowerBound ?? upper
+            let frames = to > from ? to - from : upper - lower
+            let seconds = Double(frames) * 0.04   // the model's frame rate
+            measured.append((run.range, run.harakat, seconds, from, confident))
+        }
+
+        // Judge against evidence gathered *before* this passage. Feeding the current
+        // measurements in first — especially from a shortened elongation — dilutes the
+        // peer median with the very duration being questioned.
+        var notes: [TajweedNote] = []
+        if harakaSamples.count >= options.minimumBaselineMadds {
+            let baseline = harakaSamples.sorted()[harakaSamples.count / 2]
+            for entry in measured where entry.confident {
+                // The final vowel of a passage is skipped: stopping on a word lengthens
+                // it legitimately — madd ʿāriḍ liʾs-sukūn — and whether the reciter
+                // pauses there is their choice, not something the text states.
+                guard entry.range.upperBound < symbols.count - 1 else { continue }
+                examined += 1
+
+                // The reciter's own vowels of this same written length. Comparing like
+                // with like, because the gap measure includes the transitions either
+                // side and those do not scale with the count.
+                let peers = (durationsByHarakat[entry.harakat] ?? []).sorted()
+                let expected = peers.count >= options.minimumBaselineMadds
+                    ? peers[peers.count / 2]
+                    : Double(entry.harakat) * baseline
+
+                // Two mistakes, opposite in direction. An elongation left short, and a
+                // vowel drawn out where the text asks for none — the second is only
+                // visible because short vowels are measured too, not just the madds.
+                let tooShort = entry.harakat > 2 && entry.seconds < expected * options.maddShortfall
+                let tooLong = options.flagsOverlongVowels
+                    && entry.seconds > expected * options.maddExcess
+                guard tooShort || tooLong else { continue }
+                guard let word = owner.indices.contains(entry.range.lowerBound)
+                    ? owner[entry.range.lowerBound].word : nil else { continue }
+
+                let start = Double(entry.startFrame) * 0.04
+                notes.append(
+                    TajweedNote(
+                        rule: entry.harakat >= 6 ? .maddLazim
+                            : entry.harakat > 2 ? .maddWajibMuttasil : .maddAsli,
+                        targetIndex: word.globalIndex,
+                        reference: word.reference,
+                        timeRange: start...(start + entry.seconds),
+                        confidence: .low,
+                        message: tooLong
+                            ? (entry.harakat <= 1
+                                ? "This sounds drawn out — the text has no elongation here."
+                                : "This sounds longer than the \(entry.harakat) harakāt the text asks for.")
+                            : "This elongation sounds short — it should run about \(entry.harakat) harakāt.",
+                        measurement: .init(observed: entry.seconds, expected: expected, unit: "s")
+                    )
+                )
+            }
         }
 
         // The reciter's own haraka, from their natural two-count madds — this passage's
         // and every earlier one's.
         harakaSamples.append(contentsOf: measured.filter { $0.harakat == 2 && $0.confident }.map { $0.seconds / 2 })
-        // Bounded, and biased to the recent: someone who speeds up should not be judged
-        // against the pace they opened with.
         if harakaSamples.count > 200 { harakaSamples.removeFirst(harakaSamples.count - 200) }
-        guard harakaSamples.count >= options.minimumBaselineMadds else { return [] }
-        let baseline = harakaSamples.sorted()[harakaSamples.count / 2]
-
         for entry in measured where entry.confident {
             durationsByHarakat[entry.harakat, default: []].append(entry.seconds)
             if durationsByHarakat[entry.harakat]!.count > 60 {
                 durationsByHarakat[entry.harakat]!.removeFirst()
             }
-        }
-
-        var notes: [TajweedNote] = []
-        for entry in measured where entry.harakat > 2 && entry.confident {
-            examined += 1
-            // The reciter's own elongations of this length, when there are enough of
-            // them; their two-count pace otherwise.
-            let peers = (durationsByHarakat[entry.harakat] ?? []).sorted()
-            let expected = peers.count >= options.minimumBaselineMadds
-                ? peers[peers.count / 2]
-                : Double(entry.harakat) * baseline
-            guard entry.seconds < expected * options.maddShortfall else { continue }
-            guard let word = owner.indices.contains(entry.range.lowerBound)
-                ? owner[entry.range.lowerBound].word : nil else { continue }
-            let span = byIndex[entry.range.lowerBound]
-            let start = span.map { Double($0.frames.lowerBound) * 0.04 } ?? 0
-            notes.append(
-                TajweedNote(
-                    rule: entry.harakat >= 6 ? .maddLazim : .maddWajibMuttasil,
-                    targetIndex: word.globalIndex,
-                    reference: word.reference,
-                    timeRange: start...(start + entry.seconds),
-                    confidence: entry.seconds < expected * 0.5 ? .moderate : .low,
-                    message: "This elongation sounds short — it should run about \(entry.harakat) harakāt.",
-                    measurement: .init(observed: entry.seconds, expected: expected, unit: "s")
-                )
-            )
         }
         return notes
     }

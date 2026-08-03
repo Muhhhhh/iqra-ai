@@ -164,11 +164,16 @@ final class AppSettings {
     /// that do not carry it, which is the inaccuracy the per-letter colouring exists to
     /// remove.
     var prefersCalligraphicPage: Bool = true
-    /// Check tajweed against the recitation.
+    /// Check the length of elongations against the recitation.
     ///
-    /// Uses the Muaalem model when it is installed — that is what can judge ghunnah,
-    /// qalqalah and the nūn rules — and falls back to duration measurement otherwise.
+    /// Madd only. The other rules are shown on the page but not judged from audio — the
+    /// model cannot answer questions about the quality of a sound, only its timing.
     var analysesTajweedAudio: Bool = false
+    /// Also report vowels held longer than the text asks for.
+    ///
+    /// Off by default: measured, it is wrong about four and a half times for every time
+    /// it is right, and reciters stretch vowels for reasons the text does not record.
+    var flagsOverlongVowels: Bool = false
 
     /// Ask the audio about words the matcher doubted, and clear the ones it supports.
     ///
@@ -337,11 +342,18 @@ final class AppSettings {
         if let model = locatedTajweedModel,
            let frontend = locatedTajweedFrontend,
            let features = try? MuaalemFeatures(resourceURL: frontend) {
-            // Both halves: the model for the ṣifāt rules, duration for madd, which the
-            // model has no way to judge.
-            return CompositeTajweedAnalyzer(
-                neural: MuaalemTajweedAnalyzer(modelURL: model, features: features)
-            )
+            // Forced alignment, and madd only — see `AlignedTajweedAnalyzer`. The ṣifāt
+            // heads were measured not to report what they heard, so nothing is built on
+            // them.
+            if let scriptURL = locatedPhonemeScript,
+               let script = try? PhonemeScript(contentsOf: scriptURL) {
+                return AlignedTajweedAnalyzer(
+                    model: MuaalemTajweedAnalyzer(modelURL: model, features: features),
+                    script: script,
+                    options: .init(flagsOverlongVowels: flagsOverlongVowels)
+                )
+            }
+            return DSPTajweedAnalyzer()
         }
         return DSPTajweedAnalyzer()
     }

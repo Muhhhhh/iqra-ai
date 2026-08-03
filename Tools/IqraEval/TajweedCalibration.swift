@@ -408,14 +408,15 @@ enum TajweedCalibration {
     ) -> AudioChunk? {
         let lower = max(0, range.lowerBound)
         let upper = min(chunk.samples.count, range.upperBound)
-        guard upper - lower > 1600, factor > 0.1, factor < 1 else { return nil }
+        guard upper - lower > 1600, factor > 0.1, factor != 1 else { return nil }
 
         let region = Array(chunk.samples[lower..<upper])
         let window = 480                       // 30 ms at 16 kHz
         let synthesisHop = window / 2
-        let analysisHop = Int(Double(synthesisHop) / factor)
+        // factor < 1 compresses (read further apart than written), > 1 stretches.
+        let analysisHop = max(1, Int(Double(synthesisHop) / factor))
         let search = 160                       // ±10 ms to find the best join
-        guard analysisHop > synthesisHop else { return nil }
+        guard analysisHop != synthesisHop else { return nil }
 
         let hann = (0..<window).map { 0.5 - 0.5 * cos(2 * Double.pi * Double($0) / Double(window - 1)) }
         var output = [Float](repeating: 0, count: Int(Double(region.count) * factor) + window)
@@ -607,6 +608,8 @@ enum TajweedCalibration {
         var caught = 0
         var maddAttempted = 0
         var maddCaught = 0
+        var falseMaddAttempted = 0
+        var falseMaddCaught = 0
 
         for surah in arguments.surahs {
             let surahTarget = try await store.target(surah: surah)
@@ -685,7 +688,75 @@ enum TajweedCalibration {
                                 maddAttempted += 1
                                 let after = await analyzer.analyze(segments: [segment(chunk)], target: target)
                                 if after.count > clean.count { maddCaught += 1 }
+
+                                // What the alignment actually measures for the same run
+                                // once the audio has been shortened. If this does not
+                                // fall, the detector is not the problem — the alignment
+                                // is not tracking the duration at all.
+                                if arguments.verbose,
+                                   let afterObserved = try? await model.probabilities(for: chunk),
+                                   let afterPhonemes = afterObserved.probabilities["phonemes"],
+                                   let afterSpans = try? aligner.align(
+                                       probabilities: afterPhonemes,
+                                       target: entryScript.symbols.map(Int.init)
+                                   ) {
+                                    // Two ways of measuring the same elongation:
+                                    //   span   — first symbol spike to last
+                                    //   gap    — end of the consonant before the run to
+                                    //            the start of the consonant after it
+                                    // CTC spikes mark events rather than extents, so the
+                                    // sustained vowel lives in the silence *between*
+                                    // spikes, which is what the gap measures.
+                                    func measure(
+                                        _ list: [CTCForcedAligner.Span],
+                                        _ obs: MuaalemTajweedAnalyzer.Observation
+                                    ) -> (span: Double, gap: Double)? {
+                                        let mine = list.filter { $0.index >= run.lowerBound && $0.index < run.upperBound }
+                                        guard let f = mine.first, let l = mine.last else { return nil }
+                                        let span = Double(l.frames.upperBound - f.frames.lowerBound) * obs.frameDuration
+                                        let before = list.last { $0.index < run.lowerBound }
+                                        let after = list.first { $0.index >= run.upperBound }
+                                        let from = before?.frames.upperBound ?? f.frames.lowerBound
+                                        let to = after?.frames.lowerBound ?? l.frames.upperBound
+                                        return (span, Double(max(0, to - from)) * obs.frameDuration)
+                                    }
+                                    if let cleanMeasure = measure(spansForMadd, observedForMadd),
+                                       let afterMeasure = measure(afterSpans, afterObserved) {
+                                        Swift.print("    madd \(run.count)h  span \(format(cleanMeasure.span, 2))→\(format(afterMeasure.span, 2))s"
+                                                    + "   gap \(format(cleanMeasure.gap, 2))→\(format(afterMeasure.gap, 2))s")
+                                    }
+                                }
                             }
+                        }
+                    }
+                }
+
+                // The opposite mistake: a *single* vowel, which the text writes short,
+                // stretched out into an elongation.
+                if let entryScript = script[verse.reference],
+                   let obs = try? await model.probabilities(for: audio),
+                   let ph = obs.probabilities["phonemes"],
+                   let sp = try? aligner.align(probabilities: ph, target: entryScript.symbols.map(Int.init)) {
+                    var position = 1
+                    var single: Int?
+                    while position < entryScript.symbols.count - 2 {
+                        let symbol = Int(entryScript.symbols[position])
+                        let isRun = entryScript.symbols[position + 1] == entryScript.symbols[position]
+                            || entryScript.symbols[position - 1] == entryScript.symbols[position]
+                        if [32, 33, 34].contains(symbol), !isRun { single = position; break }
+                        position += 1
+                    }
+                    if let index = single,
+                       let span = sp.first(where: { $0.index == index }),
+                       let next = sp.first(where: { $0.index > index }) {
+                        let rate = AudioChunk.canonicalSampleRate
+                        let from = Int((obs.startTime + Double(span.frames.lowerBound) * obs.frameDuration) * rate)
+                        let to = Int((obs.startTime + Double(next.frames.lowerBound) * obs.frameDuration) * rate)
+                        if from >= 0, to <= audio.samples.count, to - from > 1600,
+                           let stretched = timeCompress(audio, range: from..<to, factor: 2.5) {
+                            falseMaddAttempted += 1
+                            let after = await analyzer.analyze(segments: [segment(stretched)], target: target)
+                            if after.count > clean.count { falseMaddCaught += 1 }
                         }
                     }
                 }
@@ -735,6 +806,11 @@ enum TajweedCalibration {
         print("  attempted            \(maddAttempted)")
         print("  CAUGHT               \(maddCaught)/\(maddAttempted)  "
               + "(\(pct(Double(maddCaught) / Double(max(maddAttempted, 1)))))")
+        print("")
+        print("── with a short vowel stretched into an elongation ".padding(toLength: 72, withPad: "─", startingAt: 0))
+        print("  attempted            \(falseMaddAttempted)")
+        print("  CAUGHT               \(falseMaddCaught)/\(falseMaddAttempted)  "
+              + "(\(pct(Double(falseMaddCaught) / Double(max(falseMaddAttempted, 1)))))")
         print("")
         print("── with one ghunnah removed ".padding(toLength: 72, withPad: "─", startingAt: 0))
         print("  attempted            \(attempted)")

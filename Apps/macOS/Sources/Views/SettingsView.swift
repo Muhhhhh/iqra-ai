@@ -267,7 +267,17 @@ private struct TajweedSettings: View {
             }
 
             Section {
-                Toggle("Check tajweed against my recitation", isOn: $settings.analysesTajweedAudio)
+                Toggle("Check elongations against my recitation", isOn: $settings.analysesTajweedAudio)
+                Text("Madd only — how long a sound was held, which is measurable. Ghunnah, qalqalah and the nūn rules ask how a sound was *made*, and the model was measured to guess those from context rather than hear them, so they are shown on the page but not judged. Measured against elongations cut to half length: about one in four caught, with 4 false flags across 47 passages of correct recitation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("Also flag vowels held too long", isOn: $settings.flagsOverlongVowels)
+                    .disabled(!settings.analysesTajweedAudio)
+                Text("Catches a madd where the text has none. It works, but costs about four and a half false flags for every real one — and reciters lengthen vowels for reasons the text does not record.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 LabeledContent(
                     "Method",
                     value: settings.hasNeuralTajweed ? "Muaalem model" : "Duration only"

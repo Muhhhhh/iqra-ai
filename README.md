@@ -566,8 +566,38 @@ Against that negative: **1 of 42**. Essentially unchanged from the spliced 2 of 
 test was not the problem — the detector does not work, and now that is measured rather
 than suspected.
 
-So both routes to audio tajweed have now been measured and both fail, for different
-reasons: the ṣifah heads predict from context instead of reporting what they heard, and
+### Madd, which does work
+
+Duration measured through forced alignment failed at first for a reason worth recording:
+the elongation was being measured as the *span of its own symbols*, and CTC spikes mark
+events rather than extents. The two `ا` of a written madd land on the vowel's onset and on
+the transition out of it, wherever the vowel's own length happens to fall in between.
+Halve the audio and the span does not move:
+
+    madd 4h   symbol span 0.56 → 0.56 s     consonant gap 1.64 → 1.40 s
+    madd 6h   symbol span 0.88 → 0.88 s     consonant gap 2.92 → 2.48 s
+
+The sustained sound lives in the silence *between* spikes, so the interval between the
+neighbouring consonants is what carries the duration. Measuring that instead took
+detection from 1 in 42 to 11 in 42, with 4 false flags across 47 passages of correct
+recitation. The reciter supplies the scale — a haraka is however long they make it — and
+each elongation is compared against their own elongations of the same written length.
+
+The opposite mistake, a vowel drawn out where the text asks for none, is detectable by the
+same measurement but is off by default. It costs about four and a half false flags per
+genuine catch:
+
+| over-length threshold | falsely flagged | stretched caught | shortened caught |
+|---|---|---|---|
+| off | 4 | — | 11/42 |
+| 2.0 | 33 | 7/43 | 11/42 |
+| 1.8 | 48 | 10/43 | 10/42 |
+| 1.6 | 63 | 13/43 | 12/42 |
+
+Reciters also lengthen vowels for reasons the text does not record — pace, breath,
+emphasis — so some of what it calls an error is not one. Available, and off.
+
+So of the routes to audio tajweed, one works and the rest do not: the ṣifah heads predict from context instead of reporting what they heard, and
 duration measured through forced alignment does not track the duration actually recited.
 Audio tajweed verification stays off, and the honest summary is that this app checks
 *which words* were recited, not *how*. Word-level rule colouring on the page remains
