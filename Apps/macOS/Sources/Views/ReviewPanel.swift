@@ -109,7 +109,7 @@ struct ReviewPanel: View {
                     // able to tell those three apart without reading the source.
                     Section {
                         ForEach(model.tajweedNotes) { note in
-                            TajweedRow(note: note)
+                            tajweedRow(note)
                         }
                         TajweedStatusRow(model: model)
                     } header: {
@@ -207,6 +207,20 @@ struct ReviewPanel: View {
         return .idle
     }
 
+    /// Built outside the view body: inline, the type checker gave up on it.
+    private func tajweedRow(_ note: TajweedNote) -> some View {
+        let word: WordEvaluation? = model.words.first { $0.targetIndex == note.targetIndex }
+        let playable: Bool = audio(for: note.timeRange) != nil
+        return TajweedRow(
+            note: note,
+            word: word,
+            isSelected: selectedWord == note.targetIndex,
+            canPlay: playable,
+            onSelect: { selectedWord = note.targetIndex },
+            onPlay: { play(note) }
+        )
+    }
+
     // MARK: - Playback
 
     /// Finds the retained segment whose audio covers this word.
@@ -218,6 +232,35 @@ struct ReviewPanel: View {
             }
         }
         return nil
+    }
+
+    /// The exact stretch a tajweed note points at, sliced out of the retained audio.
+    private func audio(for range: ClosedRange<TimeInterval>) -> AudioChunk? {
+        for segment in model.segments
+        where segment.startTime <= range.upperBound && segment.endTime >= range.lowerBound {
+            let rate = AudioChunk.canonicalSampleRate
+            let from = Int((max(range.lowerBound, segment.startTime) - segment.startTime) * rate)
+            let to = Int((min(range.upperBound, segment.endTime) - segment.startTime) * rate)
+            guard from >= 0, to <= segment.audio.samples.count, to > from else { continue }
+            return AudioChunk(
+                samples: Array(segment.audio.samples[from..<to]),
+                startTime: range.lowerBound
+            )
+        }
+        return nil
+    }
+
+    private func play(_ note: TajweedNote) {
+        guard let clip = audio(for: note.timeRange) else {
+            playbackError = "No audio retained for this note."
+            return
+        }
+        playbackError = nil
+        Task {
+            do { try await player.play(clip) } catch {
+                playbackError = "Playback failed: \(error)"
+            }
+        }
     }
 
     private func play(_ evaluation: WordEvaluation) {
@@ -435,6 +478,12 @@ private struct TajweedStatusRow: View {
 
 private struct TajweedRow: View {
     let note: TajweedNote
+    /// The word the note sits on, so the row can show *which* one it means.
+    let word: WordEvaluation?
+    let isSelected: Bool
+    let canPlay: Bool
+    let onSelect: () -> Void
+    let onPlay: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -442,6 +491,26 @@ private struct TajweedRow: View {
                 .foregroundStyle(TajweedStyle.colour(for: note.rule))
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
+                // The word itself, and where it is. A note that says only "this
+                // elongation sounds short" leaves the reciter hunting the page for it.
+                if let word {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(word.expectedText)
+                            .font(QuranFont.mushaf(size: 22))
+                            .environment(\.layoutDirection, .rightToLeft)
+                        Text(note.reference.description)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        if canPlay {
+                            Button(action: onPlay) {
+                                Image(systemName: "play.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Play just this stretch of your recitation")
+                        }
+                    }
+                }
                 HStack(spacing: 6) {
                     Text(note.rule.title)
                         .font(.callout.weight(.medium))
@@ -463,5 +532,12 @@ private struct TajweedRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .background(
+            isSelected
+                ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.14))
+                : nil
+        )
     }
 }
