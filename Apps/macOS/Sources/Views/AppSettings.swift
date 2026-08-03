@@ -176,7 +176,9 @@ final class AppSettings {
     ///
     /// Off by default: measured, it is wrong about four and a half times for every time
     /// it is right, and reciters stretch vowels for reasons the text does not record.
-    var flagsOverlongVowels: Bool = false
+    var flagsOverlongVowels: Bool = false {
+        didSet { cachedTajweedAnalyzer = nil }
+    }
 
     /// Ask the audio about words the matcher doubted, and clear the ones it supports.
     ///
@@ -231,6 +233,12 @@ final class AppSettings {
 
     private var cachedKey: ComponentKey?
     private var cachedRecognizer: WhisperSpeechRecognizer?
+    /// Reused across sessions so the reciter's own pace survives pressing Stop.
+    ///
+    /// Madd is judged against the reciter's two-count elongations, and a fresh analyzer
+    /// starts with none — so on a short take nothing was ever examined, and the coverage
+    /// line said so without explaining why.
+    private var cachedTajweedAnalyzer: (any TajweedAnalyzer)?
     private var cachedVAD: SileroVoiceActivityDetector?
 
     private var currentKey: ComponentKey {
@@ -250,6 +258,7 @@ final class AppSettings {
         cachedKey = nil
         cachedRecognizer = nil
         cachedVAD = nil
+        cachedTajweedAnalyzer = nil
     }
 
     /// Release the models and their Metal resources, and wait for it.
@@ -340,6 +349,13 @@ final class AppSettings {
 
     private func makeTajweedAnalyzer() -> any TajweedAnalyzer {
         guard analysesTajweedAudio else { return NoOpTajweedAnalyzer() }
+        if let cachedTajweedAnalyzer { return cachedTajweedAnalyzer }
+        let built = buildTajweedAnalyzer()
+        cachedTajweedAnalyzer = built
+        return built
+    }
+
+    private func buildTajweedAnalyzer() -> any TajweedAnalyzer {
         // The neural verifier when it is installed; duration measurement otherwise. The
         // fallback can only speak about madd length, which the UI says.
         if let model = locatedTajweedModel,

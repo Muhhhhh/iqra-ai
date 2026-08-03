@@ -357,12 +357,13 @@ private struct TajweedStatusRow: View {
     @State private var settings = AppSettings.shared
     @State private var library = QuranLibrary.shared
 
-    /// Rules on this page the audio checker could judge if every word were recognised.
-    private var judgeable: Int {
-        library.tajweedSpansByWord.values.reduce(0) { total, spans in
-            total + spans.count { MuaalemTajweedAnalyzer.audioVerifiable.contains($0.rule) }
-        }
-    }
+    /// What the analyzer says it could judge, rather than a count of something else.
+    ///
+    /// This used to count the ṣifāt rules on the page — ghunnah, ikhfāʾ, qalqalah — which
+    /// stopped being checked at all when the ṣifāt heads were measured and disabled. So it
+    /// reported three examined out of fifty, where the fifty were rules nothing looks at
+    /// and the three were elongations. Two different things in one sentence.
+    private var judgeable: Int { model.tajweedCoverage.judgeable }
 
     var body: some View {
         Group {
@@ -373,7 +374,7 @@ private struct TajweedStatusRow: View {
             } else if model.segments.isEmpty && model.tajweedNotes.isEmpty {
                 row(
                     "Ready",
-                    detail: "\(judgeable) rules on this page can be checked, as you recite.",
+                    detail: "Elongations are checked as you recite — how long each madd was held, against your own pace.",
                     symbol: "waveform.badge.magnifyingglass"
                 )
             } else if model.isRunning && model.tajweedCoverage.examined == 0 && model.tajweedNotes.isEmpty {
@@ -392,14 +393,14 @@ private struct TajweedStatusRow: View {
                 // against the page's total would credit the checker with inspecting text
                 // it never heard.
                 let coverage = model.tajweedCoverage
-                let inspected = "\(coverage.examined) of \(max(coverage.judgeable, judgeable)) checkable rules were actually examined"
+                let inspected = "\(coverage.examined) of \(coverage.judgeable) elongations were measured"
                 let why = coverage.skippedWithoutTiming > 0
-                    ? " — the rest sat on words the recogniser did not place, so there was no stretch of audio to read."
+                    ? " — the rest sat on words the recogniser did not place, or came before you had recited enough for your own pace to be known."
                     : "."
                 if coverage.examined == 0 {
                     row(
                         "Nothing was examined",
-                        detail: "No rule sat on a word confidently enough recognised to time. This says nothing about your tajweed.",
+                        detail: "No elongation sat on a word recognised confidently enough to time, or you have not yet recited enough for your pace to be measured. This says nothing about your tajweed.",
                         symbol: "questionmark.circle"
                     )
                 } else if model.tajweedNotes.isEmpty {

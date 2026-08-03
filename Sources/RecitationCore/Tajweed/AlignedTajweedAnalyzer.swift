@@ -216,7 +216,15 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             else { continue }
 
             notes += maddNotes(spans: spans, owner: owner, symbols: symbols, examined: &examined)
-            required += maddRuns(in: symbols).count
+            // What this analyzer will actually try to judge: elongations, minus the final
+            // vowel of the passage, and minus the short ones unless over-length checking
+            // is on. Counting anything else would make the coverage report compare two
+            // different things — which it did, quoting the ṣifāt rules on the page
+            // against the elongations examined.
+            required += maddRuns(in: symbols).count { run in
+                guard run.range.upperBound < symbols.count - 1 else { return false }
+                return options.flagsOverlongVowels || run.harakat > 2
+            }
 
             for span in spans where options.judgesSifat && span.index < owner.count {
                 guard span.confidence >= options.alignmentConfidence else { continue }
