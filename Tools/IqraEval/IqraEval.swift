@@ -991,6 +991,8 @@ struct Arguments {
     var goodnessTest = false
     /// Judge elongations against a reference reciter of the same āyah.
     var referenceMadd = false
+    /// Measure nasalisation from the signal rather than from the model.
+    var nasalityTest = false
     var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
@@ -1050,6 +1052,7 @@ struct Arguments {
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true
             case "--reference-madd": referenceMadd = true
+            case "--nasality": nasalityTest = true
             case "--reference-shortfall": referenceShortfall = next().flatMap { Double($0) } ?? referenceShortfall
             case "--pronunciation-scoring": usePronunciationScoring = true
             case "--phonemes": forcedAlignPhonemes = next()

@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.nasalityTest {
+            try await measureNasality(arguments, reciter: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.referenceMadd {
             try await measureReferenceMadd(arguments, subject: reciter, model: analyzer, store: store)
             return
@@ -463,6 +468,140 @@ enum TajweedCalibration {
         samples.append(contentsOf: compressed)
         samples.append(contentsOf: chunk.samples[upper...])
         return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
+    // MARK: - Nasality, measured from the signal
+
+    /// Does the acoustic signature of nasalisation separate a real ghunnah from a
+    /// missing one, where the model could not?
+    ///
+    /// Every model-based attempt failed because the Muaalem heads were trained on
+    /// recitation that is correct throughout — they have never seen an unnasalised nūn and
+    /// predict the ṣifah the phonemes imply. This asks the signal instead: nasalisation
+    /// adds a murmur near 250 Hz and drains energy near 1 kHz, so the low-to-mid energy
+    /// ratio should rise during a ghunnah and not during an oral sound.
+    ///
+    /// Measured against the reciter's own neighbouring oral audio, so voice and room
+    /// cancel. The negative is the same one used throughout: the nasal stretch replaced by
+    /// audio the model marks as *not* nasal, same length, same voice.
+    static func measureNasality(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+        let nasality = NasalityMeasure()
+        let rate = AudioChunk.canonicalSampleRate
+
+        print("Nasality measured from the signal")
+        print("  reciter  \(reciter.name) — assumed correct throughout")
+        print("")
+
+        var intact: [Double] = []
+        var removed: [Double] = []
+
+        for surah in arguments.surahs {
+            let surahTarget = try await store.target(surah: surah)
+            for verse in surahTarget.verses.prefix(arguments.limitPerSurah) {
+                guard let entry = script[verse.reference], entry.ghonna.contains(1),
+                      let url = try? await library.fetch(verse.reference, reciter: reciter),
+                      let audio = try? AudioFileLoader.load(url: url),
+                      let observed = try? await model.probabilities(for: audio),
+                      let phonemes = observed.probabilities["phonemes"],
+                      let spans = try? aligner.align(
+                          probabilities: phonemes,
+                          target: entry.symbols.map(Int.init)
+                      )
+                else { continue }
+
+                // The audio a phoneme actually occupies runs from its own spike to the
+                // next one — not the span of the spike itself. CTC marks events, not
+                // extents, so a nūn's symbol span is the transition into the nasal while
+                // the murmur that follows it sits in the blanks. Measuring the span
+                // measured the wrong 40 ms, and it showed: with it, ghunnahs that had
+                // been *removed* scored higher at the 90th percentile than intact ones.
+                func region(_ span: CTCForcedAligner.Span) -> Range<Int>? {
+                    let next = spans.first { $0.index > span.index }
+                    let fromFrame = span.frames.lowerBound
+                    let toFrame = next?.frames.lowerBound ?? span.frames.upperBound
+                    guard toFrame > fromFrame else { return nil }
+                    let from = Int((observed.startTime + Double(fromFrame) * observed.frameDuration) * rate)
+                    let to = Int((observed.startTime + Double(toFrame) * observed.frameDuration) * rate)
+                    guard from >= 0, to - from >= 400 else { return nil }
+                    return from..<to
+                }
+
+                func samples(_ span: CTCForcedAligner.Span, in chunk: AudioChunk) -> [Float]? {
+                    guard let range = region(span), range.upperBound <= chunk.samples.count else { return nil }
+                    return Array(chunk.samples[range])
+                }
+
+                // The control is the reciter's **vowels** in this āyah, pooled. A nasal
+                // murmur has to be compared against voiced oral sound: comparing it to
+                // whatever non-nasal phoneme happens to be adjacent means comparing it to
+                // fricatives and stops, whose spectra differ from a vowel's far more than
+                // nasalisation does. Measured with that control the intact ghunnahs came
+                // out at a median contrast of 0.5 dB spread across ±13 — no signal at all.
+                let vowelSpans = spans.filter {
+                    $0.index < entry.symbols.count && [32, 33, 34].contains(Int(entry.symbols[$0.index]))
+                }
+                var oralPool: [Float] = []
+                for vowel in vowelSpans.prefix(12) {
+                    if let piece = samples(vowel, in: audio) { oralPool.append(contentsOf: piece) }
+                }
+                guard oralPool.count >= 400 else { continue }
+                let oral = oralPool
+
+                for span in spans where span.index < entry.ghonna.count && entry.ghonna[span.index] == 1 {
+                    guard let nasal = samples(span, in: audio),
+                          let score = nasality.contrast(nasal: nasal, against: oral)
+                    else { continue }
+                    intact.append(score)
+
+                    // Now take the nasalisation away and measure the same place again:
+                    // the nasal stretch replaced by the reciter's own vowel audio.
+                    guard let nasalRange = region(span),
+                          let firstVowel = vowelSpans.first,
+                          let donorRange = region(firstVowel)
+                    else { continue }
+                    let from = nasalRange.lowerBound
+                    let donorFrom = donorRange.lowerBound
+                    let length = nasal.count
+                    guard donorFrom >= 0, donorFrom + length <= audio.samples.count,
+                          from + length <= audio.samples.count else { continue }
+                    var broken = audio.samples
+                    for offset in 0..<length { broken[from + offset] = audio.samples[donorFrom + offset] }
+                    let brokenChunk = AudioChunk(samples: broken, startTime: audio.startTime)
+                    if let brokenNasal = samples(span, in: brokenChunk),
+                       let brokenScore = nasality.contrast(nasal: brokenNasal, against: oral) {
+                        removed.append(brokenScore)
+                    }
+                }
+            }
+        }
+
+        guard !intact.isEmpty, !removed.isEmpty else { print("  nothing measurable"); return }
+        let a = intact.sorted(), b = removed.sorted()
+        func stat(_ values: [Double]) -> String {
+            "median \(format(values[values.count / 2], 1)) dB, p10 \(format(percentile(values, 0.10), 1)), p90 \(format(percentile(values, 0.90), 1))"
+        }
+        print("  ghunnah intact   n=\(a.count)  \(stat(a))")
+        print("  ghunnah removed  n=\(b.count)  \(stat(b))")
+        print("")
+        // What a threshold placed between them would achieve.
+        for threshold in [0.0, 1.0, 2.0, 3.0, 4.0] {
+            let falsePositives = a.count { $0 < threshold }
+            let caught = b.count { $0 < threshold }
+            print("  below \(format(threshold, 1)) dB: "
+                  + "\(pct(Double(falsePositives) / Double(a.count))) of correct ghunnahs questioned, "
+                  + "\(pct(Double(caught) / Double(b.count))) of removed ones caught")
+        }
     }
 
     // MARK: - Reference-anchored madd

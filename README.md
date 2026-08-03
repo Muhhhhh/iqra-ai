@@ -621,6 +621,22 @@ genuine catch:
 Reciters also lengthen vowels for reasons the text does not record — pace, breath,
 emphasis — so some of what it calls an error is not one. Available, and off.
 
+**Measuring nasality from the signal was tried too, and does not separate.** If the model
+predicts ṣifāt instead of hearing them, the obvious answer is to stop asking it: nasality
+has a known acoustic signature, a murmur near 250 Hz and an anti-formant near 1 kHz, and
+forced alignment says exactly which frames are the nūn. Over 327 of Al-Husary's ghunnahs,
+against the same ghunnahs with their audio replaced by his own vowel:
+
+    ghunnah intact    median  0.5 dB   p10 -13.2   p90 13.6
+    ghunnah removed   median -3.9 dB   p10 -13.1   p90 18.6
+
+Right direction, almost complete overlap. Any threshold questions about half of correct
+ghunnahs to catch two thirds of missing ones. Three variants were tried, including the
+between-spikes fix that made madd work; none separated. A band ratio is probably too
+blunt — a male reciter's F0 sits near 100–150 Hz, so the low band carries ordinary vowel
+formants too, and the measures phoneticians use for nasality (A1–P0) need formant tracking
+rather than band energies. `IqraEval --nasality` keeps the measurement.
+
 So of the routes to audio tajweed, one works and the rest do not: the ṣifah heads predict from context instead of reporting what they heard, and
 duration measured through forced alignment does not track the duration actually recited.
 Audio tajweed verification stays off, and the honest summary is that this app checks
