@@ -583,6 +583,30 @@ detection from 1 in 42 to 11 in 42, with 4 false flags across 47 passages of cor
 recitation. The reciter supplies the scale — a haraka is however long they make it — and
 each elongation is compared against their own elongations of the same written length.
 
+**Anchoring to a reference reciter was tried and did not beat this.** Judging each
+elongation against the reciter's own median of the same written length is statistical and
+needs a warm-up, so the obvious improvement is a per-elongation expectation: Al-Husary
+recites every āyah, so force-align both recordings and compare how many of their own
+harakāt each held that particular madd for. Tested with a *different* qārī as the subject,
+because that is the realistic case and because madd length is partly a legitimate choice —
+munfaṣil may be held 2, 4 or 5 counts within Ḥafṣ.
+
+That choice is exactly what limits it. Al-Minshawi against Al-Husary, 67 elongations:
+median 106% of the reference, but p5 36% and p95 170%. Reciters agree on average and
+differ widely case by case.
+
+| shortfall | falsely flagged | shortened caught |
+|---|---|---|
+| 0.6 | 30% | 15/32 |
+| 0.5 | 18% | 14/32 |
+| 0.4 | 7.5% | 11/32 |
+| 0.35 | 3.0% | 8/32 |
+
+At a comparable false-flag rate it catches about a quarter, against the 26% the
+self-referential version already manages — and it costs a reference recording downloaded
+per āyah plus a second alignment. Not shipped. `IqraEval --reference-madd` keeps the
+measurement.
+
 The opposite mistake, a vowel drawn out where the text asks for none, is detectable by the
 same measurement but is off by default. It costs about four and a half false flags per
 genuine catch:

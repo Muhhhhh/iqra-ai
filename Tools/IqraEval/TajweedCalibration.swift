@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.referenceMadd {
+            try await measureReferenceMadd(arguments, subject: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.goodnessTest {
             try await measureGoodness(arguments, reciter: reciter, model: analyzer, store: store)
             return
@@ -458,6 +463,157 @@ enum TajweedCalibration {
         samples.append(contentsOf: compressed)
         samples.append(contentsOf: chunk.samples[upper...])
         return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
+    // MARK: - Reference-anchored madd
+
+    /// Judge an elongation against a qārī reciting the same āyah, rather than against the
+    /// reciter's own average.
+    ///
+    /// The self-referential version works but misses three elongations in four: it
+    /// compares each madd to the median of the reciter's other madds of the same written
+    /// length, which is noisy and needs several examples before it says anything. A
+    /// reference recitation of *that* āyah is a per-elongation expectation instead.
+    ///
+    /// Durations are normalised by the reciter's own haraka within the same āyah — the
+    /// median gap of the short vowels — so a slow murattal and a quick ḥadr are compared
+    /// on the same scale. What is compared is the *ratio*: how many of their own harakāt
+    /// each held that particular madd for.
+    ///
+    /// The risk this has to measure, not assume: madd lengths are partly a legitimate
+    /// choice. Madd munfaṣil may be held 2, 4 or 5 counts within Ḥafṣ, and reciters
+    /// differ. So the test uses a *different reciter* as the subject and Al-Husary as the
+    /// reference — if correct recitation by another qārī trips this, the idea is wrong.
+    static func measureReferenceMadd(
+        _ arguments: Arguments,
+        subject: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+        let reference = Reciter.husary
+
+        print("Reference-anchored madd")
+        print("  reference  \(reference.name)")
+        print("  subject    \(subject.name) — a different qārī, reciting correctly")
+        print("")
+
+        /// Each vowel run's duration in harakāt of that reciter's own, for one recording.
+        func profile(_ audio: AudioChunk, entry: PhonemeScript.Entry) async -> [Int: Double]? {
+            guard let observed = try? await model.probabilities(for: audio),
+                  let phonemes = observed.probabilities["phonemes"],
+                  let spans = try? aligner.align(
+                      probabilities: phonemes,
+                      target: entry.symbols.map(Int.init)
+                  )
+            else { return nil }
+            let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { a, _ in a })
+
+            func gap(_ range: Range<Int>) -> Double? {
+                guard byIndex[range.lowerBound] != nil else { return nil }
+                let before = spans.last { $0.index < range.lowerBound }
+                let after = spans.first { $0.index >= range.upperBound }
+                guard let from = before?.frames.upperBound ?? byIndex[range.lowerBound]?.frames.lowerBound,
+                      let to = after?.frames.lowerBound ?? byIndex[range.upperBound - 1]?.frames.upperBound,
+                      to > from
+                else { return nil }
+                return Double(to - from) * observed.frameDuration
+            }
+
+            var runs: [(range: Range<Int>, harakat: Int)] = []
+            var index = 0
+            while index < entry.symbols.count {
+                let symbol = Int(entry.symbols[index])
+                var end = index + 1
+                while end < entry.symbols.count, entry.symbols[end] == entry.symbols[index] { end += 1 }
+                if [27, 28, 29, 30, 31].contains(symbol) { runs.append((index..<end, end - index)) }
+                else if [32, 33, 34].contains(symbol), end - index == 1 { runs.append((index..<end, 1)) }
+                index = end
+            }
+
+            // This reciter's haraka, in this āyah: the median short vowel.
+            let shorts = runs.filter { $0.harakat == 1 }.compactMap { gap($0.range) }.sorted()
+            guard shorts.count >= 3 else { return nil }
+            let haraka = shorts[shorts.count / 2]
+            guard haraka > 0 else { return nil }
+
+            var byStart: [Int: Double] = [:]
+            for run in runs where run.harakat > 2 {
+                if let seconds = gap(run.range) { byStart[run.range.lowerBound] = seconds / haraka }
+            }
+            return byStart
+        }
+
+        var compared = 0
+        var falseFlags = 0
+        var attempted = 0
+        var caught = 0
+        var deviations: [Double] = []
+
+        for surah in arguments.surahs {
+            let surahTarget = try await store.target(surah: surah)
+            for verse in surahTarget.verses.prefix(arguments.limitPerSurah) {
+                guard let entry = script[verse.reference],
+                      let referenceURL = try? await library.fetch(verse.reference, reciter: reference),
+                      let subjectURL = try? await library.fetch(verse.reference, reciter: subject),
+                      let referenceAudio = try? AudioFileLoader.load(url: referenceURL),
+                      let subjectAudio = try? AudioFileLoader.load(url: subjectURL),
+                      let referenceProfile = await profile(referenceAudio, entry: entry),
+                      let subjectProfile = await profile(subjectAudio, entry: entry)
+                else { continue }
+
+                for (start, expected) in referenceProfile {
+                    guard let actual = subjectProfile[start], expected > 0 else { continue }
+                    compared += 1
+                    deviations.append(actual / expected)
+                    if actual < expected * arguments.referenceShortfall { falseFlags += 1 }
+                }
+
+                // Now shorten one elongation in the subject's recording and see whether
+                // the comparison notices.
+                guard let firstRun = referenceProfile.keys.sorted().first,
+                      let observed = try? await model.probabilities(for: subjectAudio),
+                      let phonemes = observed.probabilities["phonemes"],
+                      let spans = try? aligner.align(
+                          probabilities: phonemes,
+                          target: entry.symbols.map(Int.init)
+                      )
+                else { continue }
+                var end = firstRun + 1
+                while end < entry.symbols.count, entry.symbols[end] == entry.symbols[firstRun] { end += 1 }
+                guard let first = spans.first(where: { $0.index == firstRun }),
+                      let last = spans.last(where: { $0.index < end })
+                else { continue }
+                let rate = AudioChunk.canonicalSampleRate
+                let from = Int((observed.startTime + Double(first.frames.lowerBound) * observed.frameDuration) * rate)
+                let to = Int((observed.startTime + Double(last.frames.upperBound) * observed.frameDuration) * rate)
+                guard from >= 0, to <= subjectAudio.samples.count, to - from > 1600,
+                      let shortened = timeCompress(subjectAudio, range: from..<to, factor: 0.5),
+                      let brokenProfile = await profile(shortened, entry: entry),
+                      let actual = brokenProfile[firstRun],
+                      let expected = referenceProfile[firstRun], expected > 0
+                else { continue }
+                attempted += 1
+                if actual < expected * arguments.referenceShortfall { caught += 1 }
+            }
+        }
+
+        guard compared > 0 else { print("  nothing comparable"); return }
+        let sorted = deviations.sorted()
+        print("  elongations compared   \(compared)")
+        print("  held, against the reference: median \(pct(sorted[sorted.count / 2])), "
+              + "p5 \(pct(percentile(sorted, 0.05))), p95 \(pct(percentile(sorted, 0.95)))")
+        print("  FALSE FLAGS            \(falseFlags)  (\(pct(Double(falseFlags) / Double(compared))) of correct recitation)")
+        print("")
+        print("  shortened to half      \(caught)/\(attempted)  (\(pct(Double(caught) / Double(max(attempted, 1)))))")
+        print("")
+        print("  A wide spread in the first line would mean reciters simply differ on how")
+        print("  long they hold a madd, and that anchoring to a reference cannot work.")
     }
 
     // MARK: - Goodness of pronunciation

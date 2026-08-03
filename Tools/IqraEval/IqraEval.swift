@@ -989,6 +989,9 @@ struct Arguments {
     var alignedTajweed = false
     /// Test whether alignment confidence falls where the audio stops matching the text.
     var goodnessTest = false
+    /// Judge elongations against a reference reciter of the same āyah.
+    var referenceMadd = false
+    var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
     var forcedAlignVerse = VerseReference(surah: 112, ayah: 1)
@@ -1046,6 +1049,8 @@ struct Arguments {
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true
+            case "--reference-madd": referenceMadd = true
+            case "--reference-shortfall": referenceShortfall = next().flatMap { Double($0) } ?? referenceShortfall
             case "--pronunciation-scoring": usePronunciationScoring = true
             case "--phonemes": forcedAlignPhonemes = next()
             case "--phoneme-vocab": phonemeVocabularyPath = next() ?? phonemeVocabularyPath
