@@ -292,6 +292,12 @@ private struct TajweedSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Slider(value: $settings.maddShortfall, in: 0.6...0.9)
+                Text("An elongation is questioned when it runs under \(settings.maddShortfall, format: .percent.precision(.fractionLength(0))) of what your own pace suggests. Lower is quieter. The default was measured on studio recordings of a qārī, so if it questions elongations you know were right, lower it — that is the setting doing its job, not you being wrong.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("Also flag vowels held too long", isOn: $settings.flagsOverlongVowels)
                     .disabled(!settings.analysesTajweedAudio)
                 Text("Catches a madd where the text has none. It works, but costs about four and a half false flags for every real one — and reciters lengthen vowels for reasons the text does not record.")

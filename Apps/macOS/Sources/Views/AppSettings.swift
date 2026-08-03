@@ -179,6 +179,14 @@ final class AppSettings {
     var flagsOverlongVowels: Bool = false {
         didSet { cachedTajweedAnalyzer = nil }
     }
+    /// How far short an elongation must fall before it is questioned.
+    ///
+    /// Exposed because the right value depends on the voice and the microphone, and every
+    /// number behind the default was measured on studio recordings of a qārī. Lower is
+    /// quieter.
+    var maddShortfall: Double = 0.8 {
+        didSet { cachedTajweedAnalyzer = nil }
+    }
 
     /// Ask the audio about words the matcher doubted, and clear the ones it supports.
     ///
@@ -369,7 +377,10 @@ final class AppSettings {
                 return AlignedTajweedAnalyzer(
                     model: MuaalemTajweedAnalyzer(modelURL: model, features: features),
                     script: script,
-                    options: .init(flagsOverlongVowels: flagsOverlongVowels)
+                    options: .init(
+                        maddShortfall: maddShortfall,
+                        flagsOverlongVowels: flagsOverlongVowels
+                    )
                 )
             }
             return DSPTajweedAnalyzer()

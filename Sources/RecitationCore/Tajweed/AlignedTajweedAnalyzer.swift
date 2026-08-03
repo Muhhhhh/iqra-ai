@@ -80,6 +80,13 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// may want it. Left off because a check that is wrong four times for every time
         /// it is right does not belong on by default in this app.
         public var flagsOverlongVowels: Bool
+        /// Mean alignment confidence a *word* needs before its elongations are judged.
+        ///
+        /// Forced alignment returns a path whatever it is given, so this asks whether the
+        /// audio actually contains the word before any duration is read off it. Per word,
+        /// never per phoneme: a shortened elongation lowers confidence on the phonemes
+        /// around it, and gating on those looks away from exactly the case being checked.
+        public var wordSupport: Double
         /// Two-count madds needed in the same passage before the reciter's pace means
         /// anything at all.
         public var minimumBaselineMadds: Int
@@ -100,6 +107,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             maddShortfall: Double = 0.8,
             maddExcess: Double = 1.8,
             flagsOverlongVowels: Bool = false,
+            wordSupport: Double = 0.5,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
         ) {
@@ -107,6 +115,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.maddShortfall = maddShortfall
             self.maddExcess = maddExcess
             self.flagsOverlongVowels = flagsOverlongVowels
+            self.wordSupport = wordSupport
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
             self.contraryThreshold = contraryThreshold
@@ -185,8 +194,18 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             // Only words this segment actually carries, in order — aligning an āyah's
             // whole phoneme sequence to audio holding half of it would misplace
             // everything after the join.
+            // Only words the matcher is confident were recited, and confident *which*
+            // word they were.
+            //
+            // Judging a madd means reading a duration off a forced alignment, and a
+            // forced alignment always returns a path whether or not the audio contains
+            // the words it was given. If the matcher was wrong about which words this
+            // stretch holds — and at this pipeline's word error rate it often is — the
+            // phonemes being aligned do not correspond to the sound, every duration read
+            // from them is arbitrary, and the elongations "found" in it were never
+            // recited at all. That is how the check ends up inventing elongations.
             let spoken = segment.words
-                .filter { $0.timeRange != nil }
+                .filter { $0.timeRange != nil && $0.status == .correct }
                 .sorted { $0.targetIndex < $1.targetIndex }
             guard !spoken.isEmpty else { continue }
 
@@ -215,7 +234,32 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                   let spans = try? aligner.align(probabilities: phonemes, target: symbols)
             else { continue }
 
-            notes += maddNotes(spans: spans, owner: owner, symbols: symbols, examined: &examined)
+            // A second gate, on the audio rather than the transcript: the words whose
+            // expected sounds the alignment actually found. Deliberately measured per
+            // *word* and not per phoneme — a shortened elongation lowers confidence on
+            // the phonemes around it, so a phoneme-level gate would look away from the
+            // very case being checked. That mistake cost 42 undetected madds earlier.
+            var supported: Set<Int> = []
+            var perWord: [Int: (sum: Double, count: Int)] = [:]
+            for span in spans where span.index < owner.count {
+                let index = owner[span.index].word.globalIndex
+                var entry = perWord[index] ?? (0, 0)
+                entry.sum += span.confidence
+                entry.count += 1
+                perWord[index] = entry
+            }
+            for (index, entry) in perWord
+            where entry.count > 0 && entry.sum / Double(entry.count) >= options.wordSupport {
+                supported.insert(index)
+            }
+
+            notes += maddNotes(
+                spans: spans,
+                owner: owner,
+                symbols: symbols,
+                supported: supported,
+                examined: &examined
+            )
             // What this analyzer will actually try to judge: elongations, minus the final
             // vowel of the passage, and minus the short ones unless over-length checking
             // is on. Counting anything else would make the coverage report compare two
@@ -311,6 +355,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         spans: [CTCForcedAligner.Span],
         owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
         symbols: [Int],
+        supported: Set<Int>,
         examined: inout Int
     ) -> [TajweedNote] {
         let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
@@ -372,6 +417,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 // it legitimately — madd ʿāriḍ liʾs-sukūn — and whether the reciter
                 // pauses there is their choice, not something the text states.
                 guard entry.range.upperBound < symbols.count - 1 else { continue }
+                // Whose word this elongation belongs to, and whether the audio bore it out.
+                guard owner.indices.contains(entry.range.lowerBound),
+                      supported.contains(owner[entry.range.lowerBound].word.globalIndex)
+                else { continue }
                 examined += 1
 
                 // The reciter's own vowels of this same written length. Comparing like
