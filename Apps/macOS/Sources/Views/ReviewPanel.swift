@@ -9,6 +9,8 @@ import SwiftUI
 struct ReviewPanel: View {
     let model: RecitationSessionModel
     @Binding var selectedWord: Int?
+    /// False in Fog, where nothing is judged, so there is nothing to review.
+    var reportsMistakes: Bool = true
 
     @State private var player = AudioChunkPlayer()
     @State private var playbackError: String?
@@ -20,7 +22,7 @@ struct ReviewPanel: View {
     }
 
     private var hasAnythingToShow: Bool {
-        !reviewItems.isEmpty || model.insertions.contains { $0.kind == .addition }
+        reportsMistakes && (!reviewItems.isEmpty || model.insertions.contains { $0.kind == .addition })
     }
 
     var body: some View {
@@ -32,6 +34,17 @@ struct ReviewPanel: View {
                 emptyState
             } else {
                 List {
+                    if !reportsMistakes {
+                        Section {
+                            Label(
+                                "Fog checks nothing. Words appear as you recite them and nothing is marked — switch to Fog Pro if you want mistakes reported while the page fills in.",
+                                systemImage: "eye.slash"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+
                     if !reviewItems.isEmpty {
                         Section("Words to review") {
                             ForEach(reviewItems) { item in

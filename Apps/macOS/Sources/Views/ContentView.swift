@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var library = QuranLibrary.shared
     @State private var pins = PinStore.shared
     @State private var selectedWord: Int?
+    /// Furthest word revealed by asking for a hint, in fog modes. -1 is none.
+    @State private var revealedThrough = -1
     @State private var showsReviewPanel = true
     @State private var inspectedWord: InspectedWord?
     /// Guards against turning twice off one burst of alignment updates.
@@ -41,7 +43,11 @@ struct ContentView: View {
                 mushaf
                 if showsReviewPanel {
                     Divider()
-                    ReviewPanel(model: model, selectedWord: $selectedWord)
+                    ReviewPanel(
+                        model: model,
+                        selectedWord: $selectedWord,
+                        reportsMistakes: settings.practiceMode.reportsMistakes
+                    )
                         .frame(width: 320)
                         .transition(.move(edge: .trailing))
                 }
@@ -56,6 +62,8 @@ struct ContentView: View {
         .onChange(of: settings.recognizerKind) { _, _ in resetSession() }
         .onReceive(NotificationCenter.default.publisher(for: .toggleRecitation)) { _ in toggle() }
         .onReceive(NotificationCenter.default.publisher(for: .resetRecitation)) { _ in retry() }
+        .onReceive(NotificationCenter.default.publisher(for: .revealNextWord)) { _ in revealNextWord() }
+        .onChange(of: settings.practiceMode) { _, _ in revealedThrough = -1 }
         .onReceive(NotificationCenter.default.publisher(for: .selectNextMistake)) { _ in step(by: 1) }
         .onReceive(NotificationCenter.default.publisher(for: .selectPreviousMistake)) { _ in step(by: -1) }
     }
@@ -69,7 +77,12 @@ struct ContentView: View {
             Divider()
             PageNavigator(library: library, settings: settings)
             Divider()
-            StatusBar(model: model, settings: settings, isRecalled: isShowingHeldMarks)
+            StatusBar(
+                model: model,
+                settings: settings,
+                isRecalled: isShowingHeldMarks,
+                reportsMistakes: settings.practiceMode.reportsMistakes
+            )
         }
         .frame(minWidth: 520)
     }
@@ -88,10 +101,14 @@ struct ContentView: View {
                 ),
                 tajweed: settings.showsTajweed ? library.tajweedSpansByWord : [:],
                 prefersCalligraphy: settings.prefersCalligraphicPage,
-                tajweedFindings: Dictionary(
-                    model.tajweedNotes.map { ($0.targetIndex, $0.rule) },
-                    uniquingKeysWith: { first, _ in first }
-                ),
+                tajweedFindings: settings.practiceMode.reportsMistakes
+                    ? Dictionary(
+                        model.tajweedNotes.map { ($0.targetIndex, $0.rule) },
+                        uniquingKeysWith: { first, _ in first }
+                      )
+                    : [:],
+                mode: settings.practiceMode,
+                revealedThrough: revealedThrough,
                 onSelectWord: { word in
                     Task { await showTranslation(for: word) }
                 }
@@ -139,6 +156,24 @@ struct ContentView: View {
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
+            Picker("Mode", selection: $settings.practiceMode) {
+                ForEach(PracticeMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 210)
+            .help(settings.practiceMode.explanation)
+
+            if settings.practiceMode.hidesUnrecitedText {
+                Button {
+                    revealNextWord()
+                } label: {
+                    Label("Reveal next word", systemImage: "eye")
+                }
+                .help("Show the next word without reciting it (⌘H)")
+            }
+
             PinMenu(
                 library: library,
                 pins: pins,
@@ -198,6 +233,17 @@ struct ContentView: View {
         }
     }
 
+    /// Show the next word without reciting it.
+    ///
+    /// The point of fog is to recite from memory, and the point of a hint is that being
+    /// stuck should not end the session. It reveals exactly one word past wherever the
+    /// reciter has actually reached, so it cannot be held down to uncover the page.
+    private func revealNextWord() {
+        guard settings.practiceMode.hidesUnrecitedText else { return }
+        let reached = model.words.last { $0.status != .notYetRecited }?.targetIndex ?? -1
+        revealedThrough = min(max(revealedThrough, reached) + 1, (model.words.last?.targetIndex ?? 0))
+    }
+
     private func resetSession() {
         selectedWord = nil
         model.reset()
@@ -210,6 +256,7 @@ struct ContentView: View {
         isTurningPage = false
         lastAutoTurn = nil
         isShowingHeldMarks = false
+        revealedThrough = -1
         model.retry()
     }
 
@@ -255,6 +302,7 @@ struct ContentView: View {
             if heldPages.count > Self.heldPageLimit { heldPages.removeFirst() }
         }
         loadedPage = page
+        revealedThrough = -1
 
         // While reciting, hand the new page to the running session instead of resetting
         // it — that is what makes an auto-turn seamless rather than a stop and restart.
@@ -687,14 +735,18 @@ private struct StatusBar: View {
     let settings: AppSettings
     /// Marks brought back from the last time this page was open, not a live session.
     var isRecalled: Bool = false
+    /// False in fog, where nothing is judged and so nothing is counted.
+    var reportsMistakes: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 18) {
-                Label("\(model.correctCount) correct", systemImage: "checkmark.circle.fill")
+                Label("\(model.correctCount) recited", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                Label("\(model.mistakeCount) to review", systemImage: "questionmark.circle.fill")
-                    .foregroundStyle(model.mistakeCount > 0 ? .orange : .secondary)
+                if reportsMistakes {
+                    Label("\(model.mistakeCount) to review", systemImage: "questionmark.circle.fill")
+                        .foregroundStyle(model.mistakeCount > 0 ? .orange : .secondary)
+                }
                 let additions = model.insertions.count { $0.kind == .addition }
                 if additions > 0 {
                     Label("\(additions) unplaced", systemImage: "questionmark.circle.fill")

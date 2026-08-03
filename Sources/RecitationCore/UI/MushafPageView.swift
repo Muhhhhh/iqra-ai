@@ -115,6 +115,10 @@ public struct MushafPageView: View {
     /// Turning this off falls back to Unicode text, which is the only way to colour
     /// tajweed letter by letter — see `MushafWordView`.
     private let prefersCalligraphy: Bool
+    /// How the page behaves while reciting — see `PracticeMode`.
+    private let mode: PracticeMode
+    /// Highest target index revealed by asking for a hint, or -1.
+    private let revealedThrough: Int
     /// Words carrying a tajweed finding, and which rule was questioned.
     ///
     /// Marked with an underline rather than a colour: the tajweed *colouring* says which
@@ -140,12 +144,16 @@ public struct MushafPageView: View {
         tajweed: [Int: [TajweedOccurrence]] = [:],
         prefersCalligraphy: Bool = true,
         tajweedFindings: [Int: TajweedRule] = [:],
+        mode: PracticeMode = .review,
+        revealedThrough: Int = -1,
         onSelectWord: @escaping (MushafWord) -> Void = { _ in }
     ) {
         self._zoom = zoom
         self.tajweed = tajweed
         self.prefersCalligraphy = prefersCalligraphy
         self.tajweedFindings = tajweedFindings
+        self.mode = mode
+        self.revealedThrough = revealedThrough
         self.page = page
         self.evaluations = Dictionary(
             words.map { ($0.targetIndex, $0) },
@@ -310,6 +318,20 @@ public struct MushafPageView: View {
         }
     }
 
+    /// Whether a word may be seen yet.
+    ///
+    /// Reaching a word reveals it, whatever the verdict — including a misread one, so the
+    /// reciter can see what the word actually was and carry on rather than being stuck in
+    /// front of a blank. A hint reveals the next word without reciting it.
+    private func isRevealed(_ word: MushafWord, status: WordStatus) -> Bool {
+        guard mode.hidesUnrecitedText else { return true }
+        // Āyah ornaments stay: they are the page's structure rather than its text, and
+        // hiding them makes it impossible to tell where you are.
+        guard word.kind == .word, let index = word.targetIndex else { return true }
+        if status != .notYetRecited { return true }
+        return index <= revealedThrough
+    }
+
     /// Lines that fall well short of the measure are left ragged instead of stretched.
     private func isShort(_ line: MushafLine) -> Bool {
         guard let last = page.lines.last(where: { !$0.words.isEmpty }) else { return false }
@@ -343,6 +365,8 @@ public struct MushafPageView: View {
                 isCalligraphic: layout.usesCalligraphy && !word.code.isEmpty,
                 tajweed: word.targetIndex.flatMap { tajweed[$0] } ?? [],
                 tajweedFinding: word.targetIndex.flatMap { tajweedFindings[$0] },
+                mode: mode,
+                isRevealed: isRevealed(word, status: status),
                 isSelected: word.targetIndex != nil && selection == word.targetIndex
             ) {
                 if let index = word.targetIndex {
@@ -394,6 +418,9 @@ private struct MushafWordView: View {
     let tajweed: [TajweedOccurrence]
     /// A rule this word was questioned on, if any.
     let tajweedFinding: TajweedRule?
+    let mode: PracticeMode
+    /// False while the word is still hidden by fog.
+    let isRevealed: Bool
     let isSelected: Bool
     let onTap: () -> Void
 
@@ -408,7 +435,10 @@ private struct MushafWordView: View {
     }
 
     private var colour: Color {
-        WordStatusStyle.foreground(for: status)
+        // Fog reports nothing, so a word it has revealed is simply text. Fog Pro keeps
+        // the verdicts.
+        guard mode.reportsMistakes else { return .primary }
+        return WordStatusStyle.foreground(for: status)
     }
 
     /// The word with each rule's own letters tinted, everything else left alone.
@@ -439,8 +469,12 @@ private struct MushafWordView: View {
         }
             .font(font)
             .foregroundStyle(colour.opacity(WordStatusStyle.opacity(for: status)))
+            // Hidden, not removed: the word keeps its place so the page does not reflow
+            // as it fills in, and the muṣḥaf's line breaks stay where they belong.
+            .opacity(isRevealed ? 1 : 0)
+            .animation(.easeOut(duration: 0.28), value: isRevealed)
             .overlay(alignment: .bottom) {
-                if let colour = WordStatusStyle.underline(for: status) {
+                if isRevealed, mode.reportsMistakes, let colour = WordStatusStyle.underline(for: status) {
                     Capsule()
                         .fill(colour)
                         .frame(height: max(1.5, fontSize * 0.04))
@@ -451,7 +485,7 @@ private struct MushafWordView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                if let tajweedFinding {
+                if isRevealed, let tajweedFinding {
                     // Dashed, and in the rule's own colour, so it reads as a different
                     // kind of remark from the solid line that marks a word verdict — and
                     // sits below it, so a word can carry both without them merging.

@@ -41,6 +41,11 @@ struct IqraMacApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
+                Button("Reveal Next Word") {
+                    NotificationCenter.default.post(name: .revealNextWord, object: nil)
+                }
+                .keyboardShortcut("h", modifiers: [.command])
+
                 Divider()
 
                 Button("Next Mistake") {
@@ -83,4 +88,5 @@ extension Notification.Name {
     static let resetRecitation = Notification.Name("IqraResetRecitation")
     static let selectNextMistake = Notification.Name("IqraSelectNextMistake")
     static let selectPreviousMistake = Notification.Name("IqraSelectPreviousMistake")
+    static let revealNextWord = Notification.Name("IqraRevealNextWord")
 }

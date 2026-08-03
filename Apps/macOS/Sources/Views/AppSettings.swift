@@ -148,6 +148,9 @@ final class AppSettings {
     /// synthetic speech, and real recitation may behave differently.
     var beamSize: Int = 1
 
+    /// How the page behaves while reciting: visible throughout, or filling in as you go.
+    var practiceMode: PracticeMode = .review
+
     /// Muṣḥaf page zoom. 1 fits the page to the window; above that the page view scrolls.
     var pageZoom: Double = 1.0
     /// Turn to the next page automatically when the reciter reaches the end of this one,

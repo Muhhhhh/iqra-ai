@@ -147,6 +147,26 @@ private struct AudioSettings: View {
             }
 
             Section {
+                Picker("Mode", selection: $settings.practiceMode) {
+                    ForEach(PracticeMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Text(settings.practiceMode.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if settings.practiceMode.hidesUnrecitedText {
+                    Text("⌘H reveals the next word when you are stuck — one word past wherever you actually reached, so it cannot be held down to uncover the page.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text("Practice mode")
+            }
+
+            Section {
                 Toggle("Turn the page automatically", isOn: $settings.autoTurnPage)
                 Text("When you reach the end of a page while reciting, the muṣḥaf turns and the previous page's recording is discarded.")
                     .font(.caption)
