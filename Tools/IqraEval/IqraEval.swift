@@ -982,6 +982,7 @@ struct Arguments {
     /// Re-measure each clear occurrence with its acoustic evidence removed.
     var tajweedNegatives = false
     var replayPath: String?
+    var hypothesisTest = false
     /// Remove the whole word rather than just the spike.
     var tajweedRemoveWholeWord = false
     /// Expected phoneme sequence to force-align, words separated by spaces.
@@ -1061,6 +1062,7 @@ struct Arguments {
             case "--dump-tajweed-output": dumpTajweedOutput = true
             case "--tajweed-negatives": tajweedNegatives = true
             case "--replay": replayPath = next()
+            case "--hypothesis": hypothesisTest = true
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true

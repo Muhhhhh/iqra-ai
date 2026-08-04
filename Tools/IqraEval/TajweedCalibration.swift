@@ -160,6 +160,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.hypothesisTest {
+            try await measureHypothesis(arguments, reciter: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.replayPath != nil {
             try await replaySession(arguments, model: analyzer, store: store)
             return
@@ -2038,6 +2043,92 @@ enum TajweedCalibration {
 
 extension TajweedCalibration {
 
+    /// Every qalqalah in one stretch of audio: how often the sound favours the mistake.
+    ///
+    /// The unit is one āyah, always, whoever recited it. A shorter sequence is easier to
+    /// align, so comparing a reciter measured per āyah against one measured over
+    /// twenty-second segments would credit the difference to the voice when it belongs to
+    /// the passage length.
+    static func hypothesisRate(
+        audio: AudioChunk,
+        symbols: [Int],
+        model: MuaalemTajweedAnalyzer,
+        scorer: HypothesisScorer
+    ) async -> (tested: Int, preferMistake: Int, median: Double) {
+        guard let observed = try? await model.probabilities(for: audio),
+              let phonemes = observed.probabilities["phonemes"]
+        else { return (0, 0, 0) }
+        var supports: [Double] = []
+        for position in symbols.indices
+        where symbols[position] == AlignedTajweedAnalyzer.qalqalaEcho {
+            if let comparison = scorer.compare(
+                probabilities: phonemes, symbols: symbols, at: position, rule: .qalqalah
+            ) {
+                supports.append(comparison.support)
+            }
+        }
+        guard !supports.isEmpty else { return (0, 0, 0) }
+        let sorted = supports.sorted()
+        return (supports.count, supports.count { $0 < 0 }, sorted[sorted.count / 2])
+    }
+
+    /// The same measurement over a reference reciter, āyah by āyah.
+    ///
+    /// This is the control the paired recordings could not supply. A learner's ordinary
+    /// recitation favoured the no-echo reading 46.5% of the time, and nothing in that
+    /// number says whether they drop bounces or the method simply cannot tell. A qārī who
+    /// certainly does not drop them answers it: a low rate here means the 46.5% is real
+    /// information about the reciter, and a rate near half means it is the floor of the
+    /// method.
+    static func measureHypothesis(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let library = ReciterAudioLibrary()
+        let scorer = HypothesisScorer()
+
+        print("Which reading does the audio support?")
+        print("  reciter  \(reciter.name)")
+
+        var tested = 0, preferred = 0
+        var medians: [Double] = []
+        for surah in arguments.surahs {
+            let target = try await store.target(surah: surah)
+            for verse in target.verses.prefix(arguments.limitPerSurah) {
+                guard let entry = script[verse.reference],
+                      entry.symbols.contains(UInt8(AlignedTajweedAnalyzer.qalqalaEcho)),
+                      let url = try? await library.fetch(verse.reference, reciter: reciter),
+                      let audio = try? AudioFileLoader.load(url: url)
+                else { continue }
+                let result = await hypothesisRate(
+                    audio: audio,
+                    symbols: entry.symbols.map(Int.init),
+                    model: model,
+                    scorer: scorer
+                )
+                tested += result.tested
+                preferred += result.preferMistake
+                if result.tested > 0 { medians.append(result.median) }
+            }
+        }
+        let rate = Double(preferred) / Double(max(tested, 1))
+        medians.sort()
+        print("  qalqalah tested        \(tested)")
+        print("  AUDIO PREFERS MISTAKE  \(preferred)/\(tested)  (\(pct(rate)))")
+        if !medians.isEmpty {
+            print("  median support         \(format(medians[medians.count / 2], 4))")
+        }
+        print("")
+        print("  The learner's ordinary recitation sat at 46.5%. Far below that here means")
+        print("  the measure carries information; near it means this is the floor.")
+    }
+
     /// Run a session recorded by the app back through the analyzer.
     ///
     /// Recordings are useless without this. `SessionRecorder` keeps what the microphone
@@ -2183,6 +2274,47 @@ extension TajweedCalibration {
             // Every qalqalah the analyser measured, guard open, to see whether the echo
             // is even resolvable. The model advances 40 ms a frame and a bounce runs 20 to
             // 60, so this asks whether the thing being timed is bigger than the ruler.
+            // The same measurement as `--hypothesis` runs on a reference reciter, and
+            // deliberately the same unit: one āyah, cut from the session by the timings
+            // the matcher gave its words. A twenty-second segment holds several āyāt and
+            // is harder to align than one, so measuring the reciter one way and the qārī
+            // the other would charge the difference to the voice when it belongs to the
+            // length of the passage.
+            var perAyahTested = 0, perAyahPreferred = 0
+            do {
+                let scorer = HypothesisScorer()
+                var byVerse: [VerseReference: (start: Double, end: Double)] = [:]
+                for word in log.words {
+                    guard let a = word.start, let b = word.end else { continue }
+                    let reference = VerseReference(surah: word.surah, ayah: word.ayah)
+                    let existing = byVerse[reference]
+                    byVerse[reference] = (min(existing?.start ?? a, a), max(existing?.end ?? b, b))
+                }
+                for (reference, span) in byVerse.sorted(by: { $0.key < $1.key }) {
+                    guard let entry = script[reference],
+                          entry.symbols.contains(UInt8(AlignedTajweedAnalyzer.qalqalaEcho))
+                    else { continue }
+                    let from = Int(span.start * AudioChunk.canonicalSampleRate)
+                    let to = Int(span.end * AudioChunk.canonicalSampleRate)
+                    guard from >= 0, to <= audio.samples.count, to - from > 3200 else { continue }
+                    let chunk = AudioChunk(samples: Array(audio.samples[from..<to]), startTime: 0)
+                    let result = await hypothesisRate(
+                        audio: chunk,
+                        symbols: entry.symbols.map(Int.init),
+                        model: model,
+                        scorer: scorer
+                    )
+                    perAyahTested += result.tested
+                    perAyahPreferred += result.preferMistake
+                }
+            }
+            if perAyahTested > 0 {
+                print("    per āyah, as the qārī is measured:")
+                print("      qalqalah tested             \(perAyahTested)")
+                print("      audio prefers the mistake   \(perAyahPreferred)/\(perAyahTested)"
+                      + "  (\(pct(Double(perAyahPreferred) / Double(perAyahTested))))")
+            }
+
             // Which reading does the audio support? Aligned twice per qalqalah — once
             // against the phonemes the text calls for, once with the bounce deleted — so
             // the two hypotheses differ in nothing but the sound being tested.

@@ -245,7 +245,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     static let hamza = 1
 
     /// The qalqalah echo, written as its own phoneme after ب د ج ق ط.
-    static let qalqalaEcho = 38
+    public static let qalqalaEcho = 38
 
     /// For naming which elongation of a word is meant. A word holding nine is rare enough
     /// to fall back on digits.
