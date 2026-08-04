@@ -7,8 +7,9 @@ forced alignment, so nobody marked up a recording — which is the only reason a
 this size exists at all.
 
     from read_frames import load
-    X, labels, names = load("frames-husary.bin")
+    X, symbols, labels, names = load("frames-husary.bin")
     y = (labels[:, names.index("ghonna")] == 1).astype(float)   # 1 = maghnoon
+    # ن is 25 and م is 24: nasal letters, whatever the rule asks of them.
 
 Format, little-endian:
 
@@ -18,6 +19,7 @@ Format, little-endian:
     int32   ṣifāt per frame
     int32   frame count
     per frame:
+      uint8   symbol         the phoneme, as a model class index
       uint8   label[ṣifāt]   0 no expectation, else the 1-based class
       float32 feature[features]
 
@@ -50,24 +52,30 @@ CLASSES = {
 
 
 def load(path):
-    """Return (features [n, d] float32, labels [n, sifat] uint8, ṣifāt names)."""
+    """Return (features [n, d], symbols [n], labels [n, sifat], ṣifāt names)."""
     with open(path, "rb") as handle:
         if handle.read(4) != b"IQFR":
             raise ValueError(f"{path} is not a frame file")
         version, features, sifat, count = np.fromfile(handle, dtype="<i4", count=4)
-        if version != 1:
-            raise ValueError(f"unsupported version {version}")
-        record = np.dtype([("labels", np.uint8, sifat), ("x", "<f4", features)])
+        if version != 2:
+            raise ValueError(f"unsupported version {version}; regenerate the file")
+        record = np.dtype([
+            ("symbol", np.uint8),
+            ("labels", np.uint8, sifat),
+            ("x", "<f4", features),
+        ])
         data = np.fromfile(handle, dtype=record, count=count)
-    return data["x"], data["labels"], SIFAT[:sifat]
+    return data["x"], data["symbol"], data["labels"], SIFAT[:sifat]
 
 
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    X, labels, names = load(sys.argv[1])
+    X, symbols, labels, names = load(sys.argv[1])
     print(f"{len(X)} frames, {X.shape[1]} features")
+    nasal_letters = np.isin(symbols, [24, 25])
+    print(f"  ن or م: {int(nasal_letters.sum())} frames")
     print(f"  contrast feature: mean {X[:, 0].mean():.2f} dB")
     for index, name in enumerate(names):
         counts = np.bincount(labels[:, index], minlength=4)

@@ -605,8 +605,15 @@ enum TajweedCalibration {
     ///     int32   ṣifāt per frame (10, in `PhonemeScript.Sifa` order)
     ///     int32   frame count
     ///     per frame:
+    ///       uint8   symbol         the phoneme itself, as a model class index
     ///       uint8   label[ṣifāt]   0 no expectation, else the 1-based class
     ///       float32 feature[features]
+    ///
+    /// The symbol is carried because a ṣifah label alone does not say what sound was
+    /// made. `not_maghnoon` covers every phoneme the text does not require a ghunnah on
+    /// — including ن and م in positions that take none, which are nasal consonants all
+    /// the same. A classifier told those are the negative class is being asked to hear a
+    /// difference of degree as though it were a difference of kind.
     ///
     /// The first feature is the band-ratio nasality contrast; the rest are the log-mel
     /// window, oldest frame first.
@@ -711,7 +718,7 @@ enum TajweedCalibration {
             handle.write(Data(bytes: &copy, count: MemoryLayout<T>.size))
         }
         handle.write(Data("IQFR".utf8))
-        write(Int32(1))
+        write(Int32(2))
         write(Int32(featureCount))
         write(Int32(allSifat.count))
         write(Int32(0))   // frame count, rewritten at the end
@@ -822,6 +829,7 @@ enum TajweedCalibration {
                     }
                     guard vector.count == featureCount else { continue }
 
+                    handle.write(Data([entry.symbols[placed.index]]))
                     handle.write(Data(labels))
                     vector.withUnsafeBufferPointer { handle.write(Data(buffer: $0)) }
                     written += 1
