@@ -135,6 +135,24 @@ public actor RecitationPipeline {
     /// session that never cleared would grow without limit.
     public func retarget(_ newTarget: RecitationTarget) async {
         guard state == .listening || state == .starting else { return }
+
+        // Close the recording with the old page, and open a new one.
+        //
+        // A recording that runs across a page turn describes the wrong thing. The log
+        // carries the *final* alignment, and retargeting throws the old page's alignment
+        // away, so a session spanning three pages would keep three pages of audio beside a
+        // word list covering only the last — which is exactly what the second session
+        // recorded through this app looked like: 126 words, all notYetRecited, no timings,
+        // against two and a half minutes of clearly audible recitation of an earlier page.
+        // One recording per page keeps the audio and the verdicts describing each other.
+        if let recorder = components.recorder, let old = target {
+            let finished = cleared(
+                components.aligner.align(heard: heardTokens, against: old, isFinal: true)
+            )
+            await recorder.finish(words: finished.words, notes: tajweedNotes)
+            await recorder.begin()
+        }
+
         target = newTarget
         heardTokens = []
         segments = []

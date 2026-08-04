@@ -30,7 +30,7 @@ import Foundation
 /// halved and qalqalah releases excised:
 ///
 ///     rule        caught          false flags in 174 āyāt
-///     qalqalah    10/39  (26%)     3
+///     qalqalah    12/39  (31%)     0
 ///     madd        18/141 (13%)    10
 ///
 /// Modest detectors rather than good ones. They are also the only two tajweed checks in
@@ -123,8 +123,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// How far below the reciter's own releases of that same letter a qalqalah must
         /// fall before it is questioned.
         ///
-        /// 0.7 measured over three reciters, 58 āyāt each, against releases excised to
-        /// two fifths: 10 of 39 caught for 3 false flags. Both halves of that came from
+        /// 0.7 measured over three reciters, 58 āyāt each, against echoes excised to two
+        /// fifths: 12 of 39 caught for no false flags at all. Most of that came from
         /// grouping the baseline per letter and skipping the last phoneme of a passage —
         /// before those, the same threshold caught 1 of 13 for 12 false flags. Qalqalah
         /// kubrā at a pause is a heavier bounce by rule, and a ب is not a ق.
@@ -240,6 +240,12 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// short is one of these, and drawing one out is what "madd where there is no madd"
     /// actually looks like in the script.
     static let shortVowels: Set<Int> = [32, 33, 34]
+
+    /// ء — what turns a natural madd into a four-count one.
+    static let hamza = 1
+
+    /// The qalqalah echo, written as its own phoneme after ب د ج ق ط.
+    static let qalqalaEcho = 38
 
     private let model: MuaalemTajweedAnalyzer
     private let script: PhonemeScript
@@ -398,7 +404,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 supported: supported,
                 examined: &examined
             )
-            required += qalqalaPositions(in: owner).count
+            required += qalqalaPositions(in: owner, symbols: symbols).count
             // What this analyzer will actually try to judge: elongations, minus the final
             // vowel of the passage, and minus the short ones unless over-length checking
             // is on. Counting anything else would make the coverage report compare two
@@ -469,7 +475,17 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             let symbol = symbols[index]
             var end = index + 1
             while end < symbols.count, symbols[end] == symbol { end += 1 }
-            if Self.maddCarriers.contains(symbol) {
+            if Self.maddCarriers.contains(symbol), end - index >= 2 {
+                // Two or more, never one. و and ي are madd letters only when written
+                // long; written once they are ordinary consonants — the wāw of وَ, the yāʾ
+                // of يَ — and counting those as one-count elongations put 23,072 of them
+                // into this list across the muṣḥaf, 29% of everything it returned.
+                //
+                // The damage was not only the mislabelling. A one-count "madd" joins
+                // `durationsByHarakat[1]`, which is the yardstick a short vowel is then
+                // measured against, so the pace being compared against was a blend of
+                // vowels and consonants. Alif never appears singly and neither do the
+                // small wāw and yāʾ, so this costs no real elongation.
                 runs.append((index..<end, end - index))
             } else if Self.shortVowels.contains(symbol), end - index == 1 {
                 // One count: however long the reciter's haraka is, this is one of them.
@@ -589,8 +605,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 let start = Double(entry.startFrame) * 0.04
                 notes.append(
                     TajweedNote(
-                        rule: entry.harakat >= 6 ? .maddLazim
-                            : entry.harakat > 2 ? .maddWajibMuttasil : .maddAsli,
+                        rule: madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols),
                         targetIndex: word.globalIndex,
                         reference: word.reference,
                         timeRange: start...(start + entry.seconds),
@@ -617,6 +632,41 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             }
         }
         return notes
+    }
+
+
+    /// Which madd this is — which needs more than its length.
+    ///
+    /// Length alone cannot say. The phonetic script is exported with munfaṣil, muttaṣil
+    /// and ʿāriḍ all set to four counts, so 9,705 four-count runs across the muṣḥaf are
+    /// three different rules wearing one number, and naming every one of them wājib
+    /// muttaṣil told the reciter something false about a third of the time.
+    ///
+    /// What separates the two that matter is where the hamza falls. Muttaṣil is a madd
+    /// letter meeting a hamza inside the same word; munfaṣil is one ending a word whose
+    /// neighbour opens with hamza. The phoneme's owning word is already carried here, so
+    /// the distinction costs a comparison.
+    ///
+    /// ʿĀriḍ li's-sukūn has no case in `TajweedRule` and is not separated. It occurs at a
+    /// pause, and the passage's final vowel is skipped before this is reached.
+    private func madd(
+        _ harakat: Int,
+        after range: Range<Int>,
+        owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
+        symbols: [Int]
+    ) -> TajweedRule {
+        guard harakat > 2 else { return .maddAsli }
+        guard harakat < 6 else { return .maddLazim }
+
+        let next = range.upperBound
+        guard next < symbols.count, next < owner.count,
+              symbols[next] == Self.hamza,
+              owner.indices.contains(range.lowerBound)
+        else { return .maddWajibMuttasil }
+
+        return owner[next].word.globalIndex == owner[range.lowerBound].word.globalIndex
+            ? .maddWajibMuttasil
+            : .maddJaizMunfasil
     }
 
     /// Runs of consecutive phonemes that must all be nasalised — one ghunnah each.
@@ -792,9 +842,27 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// twice, but a sākin qāf followed by another qalqalah letter is two separate bounces,
     /// and merging them would measure one release where the reciter owes two.
     private func qalqalaPositions(
-        in owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)]
-    ) -> [Int] {
-        owner.indices.filter { owner[$0].qalqala == 1 }
+        in owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
+        symbols: [Int]
+    ) -> [(echo: Int, letter: Int)] {
+        // The echo, and which stop produced it.
+        //
+        // The phonetiser writes a qalqalah as *two* symbols — the stop, then symbol 38,
+        // which is the bounce itself. All 3,837 of them across the muṣḥaf are marked
+        // moqalqal and every one follows ب د ج ق or ط. That is the same gift the madd
+        // count is: the duration to be judged is written into the script, so it can be
+        // measured rather than inferred.
+        //
+        // Taking every phoneme marked moqalqal instead, which is what this did at first,
+        // takes the stop as well — and the interval after a stop's spike ends at the
+        // echo's spike, so those measurements were timing the closure and calling it the
+        // bounce. Half of what the check looked at was the wrong sound.
+        owner.indices.compactMap { index in
+            guard index < symbols.count, symbols[index] == Self.qalqalaEcho,
+                  owner[index].qalqala == 1, index > 0
+            else { return nil }
+            return (echo: index, letter: symbols[index - 1])
+        }
     }
 
     /// Was the qalqalah actually released, or did the stop run straight into what follows?
@@ -825,27 +893,36 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
         var measured: [(index: Int, letter: Int, seconds: Double, startFrame: Int)] = []
 
-        for position in qalqalaPositions(in: owner) {
-            guard let span = byIndex[position], position < symbols.count else { continue }
+        for position in qalqalaPositions(in: owner, symbols: symbols) {
+            guard let span = byIndex[position.echo] else { continue }
             // The last phoneme of the passage is skipped, for the reason the final vowel
             // is skipped in madd. Stopping on a sākin stop produces qalqalah kubrā, a
             // markedly heavier bounce, and whether the reciter pauses there is their
             // choice rather than something the text states.
-            guard position < owner.count - 1 else { continue }
-            // From this stop's burst to the onset of the next sound. No confidence gate,
-            // for the reason the madd measurement records: swallowing the release lowers
-            // the aligner's confidence around it, so any bar excludes the very case being
+            guard position.echo < owner.count - 1 else { continue }
+            // From the echo's own onset to the next sound's. No confidence gate, for the
+            // reason the madd measurement records: swallowing the release lowers the
+            // aligner's confidence around it, so any bar excludes the very case being
             // checked.
-            let next = spans.first { $0.index > position }
+            let next = spans.first { $0.index > position.echo }
             let from = span.frames.lowerBound
             guard let to = next?.frames.lowerBound, to > from else { continue }
-            measured.append((position, symbols[position], Double(to - from) * 0.04, from))
+            measured.append((position.echo, position.letter, Double(to - from) * 0.04, from))
         }
 
         var notes: [TajweedNote] = []
         for entry in measured {
-            // This letter's own releases, gathered before this passage.
-            let peers = (qalqalaReleases[entry.letter] ?? []).sorted()
+            // This letter's own echoes, gathered before this passage, falling back to
+            // every letter's when there are not yet enough of one.
+            //
+            // Qalqalah is sparse — six in the eleven āyāt of the first session recorded
+            // through the app — so insisting on three of the *same* letter means a page
+            // can go by without the check ever running, which is what "qalqalah is just
+            // not detected" looks like from the outside. Pooling is the weaker comparison
+            // and is used only until the letter can speak for itself.
+            let own = (qalqalaReleases[entry.letter] ?? []).sorted()
+            let pooled = qalqalaReleases.values.flatMap { $0 }.sorted()
+            let peers = own.count >= options.minimumBaselineMadds ? own : pooled
             guard peers.count >= options.minimumBaselineMadds else { continue }
             let expected = peers[peers.count / 2]
 

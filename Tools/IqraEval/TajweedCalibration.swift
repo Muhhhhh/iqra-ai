@@ -1520,8 +1520,16 @@ enum TajweedCalibration {
                    let obs = try? await model.probabilities(for: audio),
                    let ph = obs.probabilities["phonemes"],
                    let sp = try? aligner.align(probabilities: ph, target: entryScript.symbols.map(Int.init)) {
+                    // The echo, not the stop. `qalqala == 1` marks both the stop and the
+                    // symbol-38 bounce after it, and taking the first match takes the
+                    // stop — whose interval ends where the echo begins, so excising it
+                    // removed the closure and left the bounce untouched. The detector
+                    // measures the echo, so a negative that spares the echo tests nothing.
                     let plane = entryScript.qalqala
-                    if let index = plane.indices.first(where: { plane[$0] == 1 }),
+                    let syms = entryScript.symbols
+                    if let index = plane.indices.first(where: {
+                           plane[$0] == 1 && $0 < syms.count && syms[$0] == 38
+                       }),
                        let span = sp.first(where: { $0.index == index }),
                        let next = sp.first(where: { $0.index > index }) {
                         let rate = AudioChunk.canonicalSampleRate

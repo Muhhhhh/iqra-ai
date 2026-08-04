@@ -329,7 +329,7 @@ private struct TajweedSettings: View {
 
             Section {
                 Toggle("Check elongations against my recitation", isOn: $settings.analysesTajweedAudio)
-                Text("Two rules, both judged by how long something lasted — an elongation held, and a qalqalah given room to bounce. The nūn rules and the ṣifāt ask how a sound was *made*, which cannot be judged from recordings of correct recitation, so they are shown on the page and not marked. Across three reciters: qalqalah about one in four caught, madd about one in eight, together 5 false flags in 58 āyāt.")
+                Text("Two rules, both judged by how long something lasted — an elongation held, and a qalqalah given room to bounce. The nūn rules and the ṣifāt ask how a sound was *made*, which cannot be judged from recordings of correct recitation, so they are shown on the page and not marked. Across three reciters: qalqalah about one in three caught with no false flags at all, madd about one in eight.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
