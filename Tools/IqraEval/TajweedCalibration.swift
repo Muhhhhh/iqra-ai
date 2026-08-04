@@ -435,6 +435,44 @@ enum TajweedCalibration {
     /// stay put. Each window's read position is nudged within a small search range to
     /// whichever offset best matches what has already been written, which is what keeps
     /// the periods lining up instead of phasing against each other.
+    /// Cut the middle out of a stretch of audio, crossfading the join.
+    ///
+    /// For sounds too short to time-compress. WSOLA needs a 30 ms window and a region of
+    /// at least 100 ms to slide it through, but a qalqalah release runs 20 to 60 ms, so
+    /// every attempt to compress one returned nil and the negative never fired at all.
+    ///
+    /// Excision is the truer model of this mistake anyway. A reciter who swallows a
+    /// qalqalah does not produce a hurried echo — they release the stop straight into what
+    /// follows, and the echo is simply absent. Removing it is what that sounds like.
+    static func excise(
+        _ chunk: AudioChunk,
+        range: Range<Int>,
+        keeping: Double
+    ) -> AudioChunk? {
+        let lower = max(0, range.lowerBound)
+        let upper = min(chunk.samples.count, range.upperBound)
+        let fade = 40                          // 2.5 ms, enough to avoid a click
+        let length = upper - lower
+        guard length > 2 * fade + 80, keeping > 0, keeping < 1 else { return nil }
+
+        let removed = Int(Double(length) * (1 - keeping))
+        guard removed > fade else { return nil }
+        // Take it from the middle, so the stop's burst and the following onset both stay.
+        let cutFrom = lower + (length - removed) / 2
+        let cutTo = cutFrom + removed
+        guard cutTo + fade <= upper else { return nil }
+
+        var samples = Array(chunk.samples[..<cutFrom])
+        for index in 0..<fade {
+            let ramp = Float(index) / Float(fade)
+            let leaving = chunk.samples[cutFrom + index]
+            let arriving = chunk.samples[cutTo + index]
+            samples.append(leaving * (1 - ramp) + arriving * ramp)
+        }
+        samples.append(contentsOf: chunk.samples[(cutTo + fade)...])
+        return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
     static func timeCompress(
         _ chunk: AudioChunk,
         range: Range<Int>,
@@ -1303,6 +1341,23 @@ enum TajweedCalibration {
         var falseMaddCaught = 0
         var ghunnahAttempted = 0
         var ghunnahCaught = 0
+        var falseByRule: [TajweedRule: Int] = [:]
+        var qalqalaAttempted = 0
+        var qalqalaCaught = 0
+
+        /// Notes of the targeted rule that were not already there on clean audio.
+        ///
+        /// Counting *all* notes and asking whether the total rose was fine while one rule
+        /// was checked, and stops being fine with three. A qalqalah measurement shifts
+        /// when audio is compressed elsewhere in the āyah, so a total-count test credits
+        /// the madd check for a qalqalah flag it did not earn — and, worse, hides a real
+        /// catch behind a qalqalah flag that disappeared.
+        func provoked(_ after: [TajweedNote], _ clean: [TajweedNote], _ rules: Set<TajweedRule>) -> Bool {
+            func key(_ note: TajweedNote) -> String { "\(note.targetIndex):\(note.rule.rawValue)" }
+            let existing = Set(clean.filter { rules.contains($0.rule) }.map(key))
+            return after.contains { rules.contains($0.rule) && !existing.contains(key($0)) }
+        }
+        let maddRules: Set<TajweedRule> = [.maddAsli, .maddWajibMuttasil, .maddJaizMunfasil, .maddLazim]
 
         for surah in arguments.surahs {
             let surahTarget = try await store.target(surah: surah)
@@ -1337,6 +1392,7 @@ enum TajweedCalibration {
                 ayatTested += 1
                 let clean = await analyzer.analyze(segments: [segment(audio)], target: target)
                 falseFlags += clean.count
+                for note in clean { falseByRule[note.rule, default: 0] += 1 }
                 examinedClean += await analyzer.coverage().examined
 
                 // Shorten an elongation and see whether it is noticed. Cutting audio out
@@ -1380,7 +1436,7 @@ enum TajweedCalibration {
                                let chunk = timeCompress(audio, range: from..<to, factor: 0.5) {
                                 maddAttempted += 1
                                 let after = await analyzer.analyze(segments: [segment(chunk)], target: target)
-                                if after.count > clean.count { maddCaught += 1 }
+                                if provoked(after, clean, maddRules) { maddCaught += 1 }
 
                                 // What the alignment actually measures for the same run
                                 // once the audio has been shortened. If this does not
@@ -1447,7 +1503,30 @@ enum TajweedCalibration {
                            let rushed = timeCompress(audio, range: from..<to, factor: 0.5) {
                             ghunnahAttempted += 1
                             let after = await analyzer.analyze(segments: [segment(rushed)], target: target)
-                            if after.count > clean.count { ghunnahCaught += 1 }
+                            if provoked(after, clean, [.ghunnah]) { ghunnahCaught += 1 }
+                        }
+                    }
+                }
+
+                // A qalqalah swallowed: the release after the stop's burst compressed to
+                // two fifths, which is a sākin qāf run straight into the next sound
+                // instead of bounced. The commonest way the rule is actually missed.
+                if let entryScript = script[verse.reference],
+                   let obs = try? await model.probabilities(for: audio),
+                   let ph = obs.probabilities["phonemes"],
+                   let sp = try? aligner.align(probabilities: ph, target: entryScript.symbols.map(Int.init)) {
+                    let plane = entryScript.qalqala
+                    if let index = plane.indices.first(where: { plane[$0] == 1 }),
+                       let span = sp.first(where: { $0.index == index }),
+                       let next = sp.first(where: { $0.index > index }) {
+                        let rate = AudioChunk.canonicalSampleRate
+                        let from = Int((obs.startTime + Double(span.frames.lowerBound) * obs.frameDuration) * rate)
+                        let to = Int((obs.startTime + Double(next.frames.lowerBound) * obs.frameDuration) * rate)
+                        if from >= 0, to <= audio.samples.count, to - from > 200,
+                           let swallowed = excise(audio, range: from..<to, keeping: 0.4) {
+                            qalqalaAttempted += 1
+                            let after = await analyzer.analyze(segments: [segment(swallowed)], target: target)
+                            if provoked(after, clean, [.qalqalah]) { qalqalaCaught += 1 }
                         }
                     }
                 }
@@ -1477,7 +1556,7 @@ enum TajweedCalibration {
                            let stretched = timeCompress(audio, range: from..<to, factor: 2.5) {
                             falseMaddAttempted += 1
                             let after = await analyzer.analyze(segments: [segment(stretched)], target: target)
-                            if after.count > clean.count { falseMaddCaught += 1 }
+                            if provoked(after, clean, maddRules) { falseMaddCaught += 1 }
                         }
                     }
                 }
@@ -1515,13 +1594,16 @@ enum TajweedCalibration {
 
                 attempted += 1
                 let after = await analyzer.analyze(segments: [segment(broken)], target: target)
-                if after.count > clean.count { caught += 1 }
+                if provoked(after, clean, [.ghunnah, .qalqalah]) { caught += 1 }
             }
         }
 
         print("  āyāt tested          \(ayatTested)")
         print("  examined             \(examinedClean) phonemes carrying a rule")
         print("  FALSE FLAGS          \(falseFlags) on correct recitation")
+        for (rule, count) in falseByRule.sorted(by: { $0.value > $1.value }) {
+            print("    \(rule.rawValue.padding(toLength: 19, withPad: " ", startingAt: 0))\(count)")
+        }
         print("")
         print("── with one elongation shortened by half ".padding(toLength: 72, withPad: "─", startingAt: 0))
         print("  attempted            \(maddAttempted)")
@@ -1532,6 +1614,11 @@ enum TajweedCalibration {
         print("  attempted            \(ghunnahAttempted)")
         print("  CAUGHT               \(ghunnahCaught)/\(ghunnahAttempted)  "
               + "(\(pct(Double(ghunnahCaught) / Double(max(ghunnahAttempted, 1)))))")
+        print("")
+        print("── with one qalqalah swallowed instead of bounced ".padding(toLength: 72, withPad: "─", startingAt: 0))
+        print("  attempted            \(qalqalaAttempted)")
+        print("  CAUGHT               \(qalqalaCaught)/\(qalqalaAttempted)  "
+              + "(\(pct(Double(qalqalaCaught) / Double(max(qalqalaAttempted, 1)))))")
         print("")
         print("── with a short vowel stretched into an elongation ".padding(toLength: 72, withPad: "─", startingAt: 0))
         print("  attempted            \(falseMaddAttempted)")

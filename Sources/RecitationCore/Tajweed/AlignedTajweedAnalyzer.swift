@@ -1,27 +1,46 @@
 import Foundation
 
-/// Checks whether elongations were held for as long as the text requires.
+/// Checks the two tajweed rules that can be judged as quantities: madd and qalqalah.
 ///
-/// **Madd only.** Ghunnah, qalqalah and the nūn rules are questions about the *quality* of
-/// a sound, and the model's ṣifah heads were measured to predict those from surrounding
-/// phonetic content rather than to report what they heard: removing a ghunnah's audio
-/// entirely changed the verdict 2.7% of the time. No threshold repairs that, so those
-/// rules are detected in the text and coloured on the page, and not judged from audio.
+/// Both are checked the same way, and the way is the whole point. A ṣifah asked as a
+/// *quality* — is this nasal, is this emphatic — cannot be answered from a corpus of
+/// correct recitation, because every label such a corpus carries is derived from the text
+/// and never varies from it. Measured directly: a classifier given no audio at all, only
+/// the phonemes either side, scores a perfect AUC on all ten ṣifāt and beats every model
+/// given the sound. See `scripts/train-sifat.py --audit`. The model's own ṣifah heads fail
+/// the same way, for the same reason — removing a ghunnah's audio entirely changed their
+/// verdict 2.7% of the time.
 ///
-/// Madd is different in kind. It asks how *long* a sound lasted, which is measurable
-/// without the model having any opinion about it: the expected phonemes are forced onto
-/// the audio (`CTCForcedAligner`), and the elongation's duration is read off the result.
-/// The text supplies the expectation — `quran_transcript` writes a madd's length into the
-/// phonetic script as a repeated symbol, so `مُۥۥسَاا` states two counts of wāw and two of
-/// alif — and the reciter supplies the scale, since a haraka is however long they make it.
+/// A *quantity* escapes that. How long a sound lasted is measurable without the model
+/// having any opinion about it: the expected phonemes are forced onto the audio
+/// (`CTCForcedAligner`) and the duration is read off the result. The text supplies the
+/// expectation and the reciter supplies the scale, so nothing has to be learned from
+/// labels at all.
 ///
-/// Measured against elongations shortened to half their length: 11 of 42 caught, with 4
-/// false flags across 47 passages of correct recitation. A modest detector rather than a
-/// good one — and the only tajweed check in this app that has been shown to work at all.
+/// **Madd** asks whether an elongation ran its length. `quran_transcript` writes the count
+/// into the script as a repeated symbol — `مُۥۥسَاا` states two counts of wāw and two of alif
+/// — and each is compared against the reciter's own vowels of that same written length.
 ///
-/// The opposite mistake, a vowel drawn out where the text has none, is detectable too but
-/// costs about four and a half false flags per catch, so it is available and off by
-/// default. See `Options.flagsOverlongVowels`.
+/// **Qalqalah** asks whether the bounce was given room. A sākin qāf is a closure, a burst,
+/// then a short voiced echo; a reciter who skips it releases the stop straight into what
+/// follows and that interval collapses. Compared against this reciter's own releases *of
+/// the same letter*, since a ب and a ق do not release alike.
+///
+/// Measured over 58 āyāt each of Al-Husary, Al-Minshawi and Al-Afasy, against elongations
+/// halved and qalqalah releases excised:
+///
+///     rule        caught          false flags in 174 āyāt
+///     qalqalah    10/39  (26%)     3
+///     madd        18/141 (13%)    10
+///
+/// Modest detectors rather than good ones. They are also the only two tajweed checks in
+/// this app that have ever survived measurement, and both survived by asking how long
+/// something lasted rather than what it was.
+///
+/// Two further checks are implemented, measured, and off. A vowel drawn out where the text
+/// has none costs about four and a half false flags per catch
+/// (`Options.flagsOverlongVowels`); a ghunnah's hold caught none of 27 rushed nasals while
+/// questioning 57 correct ones (`Options.judgesGhunnahHold`).
 public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
     public struct Options: Sendable {
@@ -83,6 +102,33 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// How far below the reciter's own ghunnahs one must fall before it is
         /// questioned. Set by the same sweep as `maddShortfall`.
         public var ghunnahShortfall: Double
+        /// Judge how long a ghunnah was held.
+        ///
+        /// **Off, on measurement.** Over 58 āyāt of Al-Husary it questioned 57 correct
+        /// ghunnahs — very nearly one an āyah — and caught 0 of 27 deliberately rushed
+        /// ones. It was not a threshold that needed tightening: the check was contributing
+        /// nothing but noise, and it was doing so in the app.
+        ///
+        /// The cause is that a nūn's hold is not one quantity. A doubled nūn is a clean
+        /// sustained sound; the nasal of an ikhfāʾ or iqlāb is a transition whose length
+        /// is set by the letter that follows. Restricting to the doubled letter, which the
+        /// code already does, was not enough — even among doubled nūns the hold varies
+        /// with the vowel after it and with where the phrase is going.
+        ///
+        /// Qalqalah avoids this by grouping its baseline per letter, which is the same
+        /// remedy `durationsByHarakat` applies to madd. The equivalent grouping for ghunnah
+        /// would be by following letter, and there are too few of each in a session to
+        /// build a median from. Left available, and off.
+        public var judgesGhunnahHold: Bool
+        /// How far below the reciter's own releases of that same letter a qalqalah must
+        /// fall before it is questioned.
+        ///
+        /// 0.7 measured over three reciters, 58 āyāt each, against releases excised to
+        /// two fifths: 10 of 39 caught for 3 false flags. Both halves of that came from
+        /// grouping the baseline per letter and skipping the last phoneme of a passage —
+        /// before those, the same threshold caught 1 of 13 for 12 false flags. Qalqalah
+        /// kubrā at a pause is a heavier bounce by rule, and a ب is not a ق.
+        public var qalqalaShortfall: Double
         /// Mean alignment confidence a *word* needs before its elongations are judged.
         ///
         /// Forced alignment returns a path whatever it is given, so this asks whether the
@@ -111,6 +157,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             maddExcess: Double = 1.8,
             flagsOverlongVowels: Bool = false,
             ghunnahShortfall: Double = 0.7,
+            judgesGhunnahHold: Bool = false,
+            qalqalaShortfall: Double = 0.7,
             wordSupport: Double = 0.5,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
@@ -120,6 +168,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.maddExcess = maddExcess
             self.flagsOverlongVowels = flagsOverlongVowels
             self.ghunnahShortfall = ghunnahShortfall
+            self.judgesGhunnahHold = judgesGhunnahHold
+            self.qalqalaShortfall = qalqalaShortfall
             self.wordSupport = wordSupport
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
@@ -172,6 +222,18 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     private var durationsByHarakat: [Int: [Double]] = [:]
     /// How long the reciter holds a ghunnah, gathered across the session.
     private var ghunnahHolds: [Double] = []
+    /// How long the reciter's qalqalah releases run, gathered across the session.
+    ///
+    /// Qalqalah is sparse — about 0.7 phonemes an āyah carry it, against several
+    /// elongations — so a passage-local baseline would almost never have enough to judge
+    /// against. Same reasoning as `harakaSamples`: the way someone bounces a sākin qāf
+    /// does not change between one āyah and the next.
+    ///
+    /// Grouped by which letter it is. The five qalqalah letters are not interchangeable —
+    /// a ب releases quite differently from a ق — and pooling them produces a median that
+    /// describes none of them, which is exactly how the ghunnah hold check came to
+    /// question 57 correct recitations to catch none.
+    private var qalqalaReleases: [Int: [Double]] = [:]
 
     public init(model: MuaalemTajweedAnalyzer, script: PhonemeScript, options: Options = .default) {
         self.model = model
@@ -267,13 +329,23 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 supported: supported,
                 examined: &examined
             )
-            notes += ghunnahNotes(
+            if options.judgesGhunnahHold {
+                notes += ghunnahNotes(
+                    spans: spans,
+                    owner: owner,
+                    supported: supported,
+                    examined: &examined
+                )
+                required += ghunnahRuns(in: owner).count
+            }
+            notes += qalqalaNotes(
                 spans: spans,
                 owner: owner,
+                symbols: symbols,
                 supported: supported,
                 examined: &examined
             )
-            required += ghunnahRuns(in: owner).count
+            required += qalqalaPositions(in: owner).count
             // What this analyzer will actually try to judge: elongations, minus the final
             // vowel of the passage, and minus the short ones unless over-length checking
             // is on. Counting anything else would make the coverage report compare two
@@ -574,6 +646,97 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
         ghunnahHolds.append(contentsOf: measured.map(\.seconds))
         if ghunnahHolds.count > 120 { ghunnahHolds.removeFirst(ghunnahHolds.count - 120) }
+        return notes
+    }
+
+    /// Phonemes the text marks for qalqalah, each its own bounce.
+    ///
+    /// Not grouped into runs the way ghunnah is. A doubled nūn is one held sound written
+    /// twice, but a sākin qāf followed by another qalqalah letter is two separate bounces,
+    /// and merging them would measure one release where the reciter owes two.
+    private func qalqalaPositions(
+        in owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)]
+    ) -> [Int] {
+        owner.indices.filter { owner[$0].qalqala == 1 }
+    }
+
+    /// Was the qalqalah actually released, or did the stop run straight into what follows?
+    ///
+    /// The same measurement as madd and the ghunnah hold, and it is here for the same
+    /// reason: qalqalah has a duration, and duration is what forced alignment can report
+    /// honestly. A sākin qāf is a closure, a burst, and then a short voiced echo before the
+    /// next sound begins. CTC puts its spike on the burst — that is where the letter
+    /// becomes recognisable — so the echo lies in the interval between that spike and the
+    /// next one, exactly where a madd's sustained vowel lies.
+    ///
+    /// A reciter who skips the qalqalah does not omit the letter; they release it straight
+    /// into the following sound, and that interval collapses. So this asks whether the
+    /// bounce was given room, measured against how much room this reciter gives their
+    /// other bounces.
+    ///
+    /// It cannot tell a well-shaped echo from a flat one of the same length, any more than
+    /// the ghunnah check can hear nasality. Both judge the half of the rule that is a
+    /// quantity. The other half needs audio where the ṣifah is absent, which no corpus of
+    /// correct recitation contains.
+    private func qalqalaNotes(
+        spans: [CTCForcedAligner.Span],
+        owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
+        symbols: [Int],
+        supported: Set<Int>,
+        examined: inout Int
+    ) -> [TajweedNote] {
+        let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
+        var measured: [(index: Int, letter: Int, seconds: Double, startFrame: Int)] = []
+
+        for position in qalqalaPositions(in: owner) {
+            guard let span = byIndex[position], position < symbols.count else { continue }
+            // The last phoneme of the passage is skipped, for the reason the final vowel
+            // is skipped in madd. Stopping on a sākin stop produces qalqalah kubrā, a
+            // markedly heavier bounce, and whether the reciter pauses there is their
+            // choice rather than something the text states.
+            guard position < owner.count - 1 else { continue }
+            // From this stop's burst to the onset of the next sound. No confidence gate,
+            // for the reason the madd measurement records: swallowing the release lowers
+            // the aligner's confidence around it, so any bar excludes the very case being
+            // checked.
+            let next = spans.first { $0.index > position }
+            let from = span.frames.lowerBound
+            guard let to = next?.frames.lowerBound, to > from else { continue }
+            measured.append((position, symbols[position], Double(to - from) * 0.04, from))
+        }
+
+        var notes: [TajweedNote] = []
+        for entry in measured {
+            // This letter's own releases, gathered before this passage.
+            let peers = (qalqalaReleases[entry.letter] ?? []).sorted()
+            guard peers.count >= options.minimumBaselineMadds else { continue }
+            let expected = peers[peers.count / 2]
+
+            guard owner.indices.contains(entry.index) else { continue }
+            let word = owner[entry.index].word
+            guard supported.contains(word.globalIndex) else { continue }
+            examined += 1
+            guard entry.seconds < expected * options.qalqalaShortfall else { continue }
+            let start = Double(entry.startFrame) * 0.04
+            notes.append(
+                TajweedNote(
+                    rule: .qalqalah,
+                    targetIndex: word.globalIndex,
+                    reference: word.reference,
+                    timeRange: start...(start + entry.seconds),
+                    confidence: .low,
+                    message: "This qalqalah sounds swallowed — the letter should bounce before the next sound.",
+                    measurement: .init(observed: entry.seconds, expected: expected, unit: "s")
+                )
+            )
+        }
+
+        for entry in measured {
+            qalqalaReleases[entry.letter, default: []].append(entry.seconds)
+            if qalqalaReleases[entry.letter]!.count > 40 {
+                qalqalaReleases[entry.letter]!.removeFirst()
+            }
+        }
         return notes
     }
 
