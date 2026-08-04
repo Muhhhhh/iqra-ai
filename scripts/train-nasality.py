@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
-"""Train the ghunnah detector, and measure what it gains from another reciter.
+"""Train the ghunnah detector, and check that it is hearing rather than reading.
 
-The question this answers is how many voices a nasality detector needs before it stops
-improving. It is worth answering carefully, because the two obvious ways to add data are
-not equally useful: six times as many āyāt from the same reciters moved held-out AUC from
-0.790 to 0.779 — nothing — while going from one voice to six moved it from 0.693 to 0.803.
-Voices carry the variation that matters; āyāt mostly repeat it.
+Each frame is one phoneme of a correct recitation, labelled with whether the text asks for
+ghunnah there. That label is a fact about the text, and over the whole corpus it is very
+nearly the same fact as which letter it is: ن and م are 100% maghnoon, every other
+consonant is 0%. A model given audio scores AUC 0.814 on it — and a control given no audio
+at all, only the phoneme identity the app already knows from the muṣḥaf, scores 0.960. The
+aggregate task is letter recognition wearing a tajweed costume.
 
-Each frame is one ن or م from a correct recitation, labelled with whether the text asks
-for ghunnah there. Held-out means held-out *by reciter*: a voice in the test set appears
-nowhere in training, which is the only split that predicts what happens when a stranger
-recites into the app.
+What survives is the vowels. Symbols 32, 33 and 34 carry ghunnah 13–17% of the time, so
+identity cannot answer for them and audio has to. There the control falls to 0.514, chance,
+and audio reaches 0.718. That gap is the only measured evidence that any of this hears
+nasality, and it is the number to improve. It is also the right shape for the app: nasal
+coarticulation spreads into neighbouring vowels, so how nasal a vowel sounds is the
+acoustic evidence for whether the ghunnah beside it was actually made.
 
-    scripts/train-nasality.py --frames DIR --hold-out Minshawy_Murattal_128kbps
+    scripts/train-nasality.py --frames DIR --hold-out Minshawy_Murattal --symbols 32,33,34
 
-Add --curve to sweep the training-voice count, redrawing which voices are used at each
-size so the number describes "n voices" rather than one lucky subset.
+Always run --control alongside any new feature set. An aggregate score that goes up while
+the control goes up with it means nothing.
+
+Held-out means held-out *by reciter*: a voice in the test set appears nowhere in training,
+which is the only split that predicts what happens when a stranger recites into the app.
+Add --curve to sweep the training-voice count, redrawing which voices are used at each size
+so the number describes "n voices" rather than one lucky subset.
 """
 
 import argparse
@@ -33,7 +41,7 @@ _frames = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_frames)
 load = _frames.load
 
-def voice(path):
+def voice(path, control=False, only=None):
     """One reciter's frames: features, and 1 where the text requires ghunnah.
 
     Every phoneme is used, not only ن and م. Restricting to those two teaches nothing —
@@ -47,7 +55,25 @@ def voice(path):
     # 1 maghnoon, 2 not_maghnoon, 0 no expectation — an unlabelled frame is not evidence
     # either way, so it is dropped rather than folded into the negative class.
     labelled = ghonna > 0
-    return X[labelled], (ghonna[labelled] == 1).astype(np.float32)
+    if only is not None:
+        # Restricting to symbols whose ghunnah is not settled by identity. Over the whole
+        # corpus the label and the letter are nearly the same fact, so an aggregate score
+        # measures letter recognition; on these frames it cannot.
+        labelled &= np.isin(symbols, only)
+    if control:
+        # The control hears nothing: one-hot phoneme identity and no audio at all.
+        #
+        # Ghunnah is largely a property of which letter it is, so a detector fed audio can
+        # reach a respectable AUC while doing nothing but recognising nūns — which is
+        # useless for judging recitation, since the app already knows the letter from the
+        # text. This model can only guess from identity. Whatever it scores is the floor
+        # the audio has to clear before any of it counts as hearing.
+        identity = np.zeros((labelled.sum(), 64), dtype=np.float32)
+        identity[np.arange(labelled.sum()), symbols[labelled] % 64] = 1.0
+        X = identity
+    else:
+        X = X[labelled]
+    return X, (ghonna[labelled] == 1).astype(np.float32)
 
 
 def area_under_curve(scores, truth):
@@ -124,16 +150,20 @@ def main() -> int:
     parser.add_argument("--frames", required=True, type=Path, help="directory of .bin files")
     parser.add_argument("--hold-out", required=True, help="reciter to test on, by file stem")
     parser.add_argument("--curve", action="store_true", help="sweep the training-voice count")
+    parser.add_argument("--control", action="store_true",
+                        help="train on phoneme identity alone, with no audio")
+    parser.add_argument("--symbols", help="comma-separated symbol ids to keep")
     parser.add_argument("--draws", type=int, default=3, help="voice subsets per size")
     parser.add_argument("--min-frames", type=int, default=1000, help="ignore smaller files")
     arguments = parser.parse_args()
 
+    only = ([int(v) for v in arguments.symbols.split(",")] if arguments.symbols else None)
     files = sorted(arguments.frames.glob("*.bin"))
     voices = {}
     for path in files:
         name = path.stem.removeprefix("s-")
         try:
-            features, labels = voice(path)
+            features, labels = voice(path, arguments.control, only)
         except ValueError as error:
             print(f"    skipping {name}: {error}")
             continue
