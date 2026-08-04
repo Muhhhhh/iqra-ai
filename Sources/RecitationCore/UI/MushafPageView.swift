@@ -313,6 +313,10 @@ public struct MushafPageView: View {
                         wordView(word)
                     }
                 }
+                // Arabic runs right to left, and a plain HStack does not. Without this the
+                // basmala lays out بِسْمِ last and reads backwards — the same modifier the
+                // justified lines carry, for the same reason.
+                .environment(\.layoutDirection, .rightToLeft)
                 .font(QuranFont.mushaf(size: fontSize * (usesCalligraphy ? 0.62 : 0.88)))
                 .frame(maxWidth: .infinity)
             }

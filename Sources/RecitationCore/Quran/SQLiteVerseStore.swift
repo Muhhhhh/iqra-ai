@@ -57,6 +57,8 @@ public actor SQLiteVerseStore: VerseStore {
 
     private let connection: Connection
     private var surahCache: [SurahInfo]?
+    /// The basmala's words, read once from Al-Fātiḥah.
+    private var basmalaCache: [String]?
 
     public init(url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -285,6 +287,31 @@ extension SQLiteVerseStore {
 
 extension SQLiteVerseStore {
 
+    /// The words of the basmala, taken from Al-Fātiḥah 1:1.
+    ///
+    /// Every surah's basmala is the same four words, and Al-Fātiḥah already holds them as
+    /// a real āyah — so they are read from there rather than written out again in Swift.
+    /// One source means one orthography: the muṣḥaf writes ٱلرَّحْمَـٰنِ with a tatweel before
+    /// the dagger alif, and a second copy typed by hand would eventually differ in exactly
+    /// such a detail and quietly fail to match what the reciter said.
+    ///
+    /// Only the text is reused. The glyph codes cannot be: the QCF fonts are per page, so
+    /// Al-Fātiḥah's ﭑ is page 1's first glyph and means something else entirely in page
+    /// 597's font. A basmala carrying page 1's codes would render as another page's words,
+    /// which is worse than rendering as none.
+    func basmalaWords() throws -> [String] {
+        if let basmalaCache { return basmalaCache }
+        var words: [String] = []
+        try eachRow(
+            "SELECT text FROM words WHERE surah = 1 AND ayah = 1 AND kind = 'word' ORDER BY position",
+            bind: []
+        ) { statement in
+            words.append(Self.text(statement, 0))
+        }
+        basmalaCache = words
+        return words
+    }
+
     /// Load a page of the Madani muṣḥaf, laid out as printed.
     public func page(_ number: Int) throws -> MushafPage {
         let clamped = max(1, min(number, MushafPage.count))
@@ -358,11 +385,12 @@ extension SQLiteVerseStore {
                 // target cannot disagree: they are numbered in the same pass as every
                 // other word, and the view can highlight them like any other.
                 if let basmala = Verse.basmala(surah: descriptor.surah) {
-                    wordsByLine[number] = basmala.words.enumerated().map { offset, word in
+                    let text = (try? basmalaWords()) ?? basmala.words.map(\.text)
+                    wordsByLine[number] = text.enumerated().map { offset, word in
                         MushafWord(
                             reference: basmala.reference,
                             position: offset,
-                            text: word.text,
+                            text: word,
                             // No QCF glyph code: the calligraphic fonts have none for a
                             // line the layout data never gave words to, so this renders as
                             // Unicode text, which is what it did before.

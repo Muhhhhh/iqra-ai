@@ -706,6 +706,23 @@ struct BasmalaTests {
         #expect(SQLiteVerseStore.withBasmala(verses).count == 2)
     }
 
+    @Test("The written-out basmala matches Al-Fātiḥah's, word for word")
+    func matchesFatiha() async throws {
+        // The page reads its basmala from Al-Fātiḥah 1:1; `Verse.basmala` is the fallback
+        // for stores with no database behind them, and the two must not drift. The muṣḥaf
+        // writes ٱلرَّحْمَـٰنِ with a tatweel before the dagger alif, and a hand-typed copy
+        // would eventually differ in exactly such a detail — then fail to match what the
+        // reciter said, for a reason nobody would find by reading either file.
+        let store = try SQLiteVerseStore(
+            url: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .deletingLastPathComponent().appending(path: "Resources/quran.sqlite3")
+        )
+        let fromDatabase = try await store.basmalaWords()
+        let written = try #require(Verse.basmala(surah: 2)).words.map(\.text)
+        #expect(fromDatabase == written)
+    }
+
     @Test("At-Tawbah opens without one even at its first āyah")
     func tawbah() {
         let verses = [Verse(reference: VerseReference(surah: 9, ayah: 1), text: "بَرَآءَةٌۭ مِّنَ ٱللَّهِ")]
