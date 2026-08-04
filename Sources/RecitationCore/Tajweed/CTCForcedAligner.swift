@@ -58,10 +58,37 @@ public struct CTCForcedAligner: Sendable {
     ///
     /// - Parameter probabilities: `[frame][class]`, each row summing to 1.
     /// - Parameter target: expected symbols, as class indices. No blanks.
+    /// How well a sequence explains the audio, and where each symbol fell.
+    ///
+    /// The score is the Viterbi path's log probability divided by the frames it spans, so
+    /// sequences of different lengths can be compared. On its own it means little — an
+    /// absolute likelihood depends on the voice, the recording and the passage. Its use is
+    /// comparative: align the same audio against the phonemes the text asks for and
+    /// against a variant with a rule violated, and the difference says which reading the
+    /// audio supports.
+    ///
+    /// That comparison is the one form of tajweed judgement that cannot be confounded by
+    /// the text. Both hypotheses carry identical words and identical context, so nothing
+    /// but the sound can separate them — which is what every failed approach in this
+    /// project lacked.
+    public struct Alignment: Sendable {
+        public let spans: [Span]
+        /// Mean log probability per frame. Higher is better; always negative.
+        public let score: Double
+    }
+
     public func align(
         probabilities: [[Double]],
         target: [Int]
     ) throws -> [Span] {
+        try scored(probabilities: probabilities, target: target).spans
+    }
+
+    /// The same alignment, keeping the path score.
+    public func scored(
+        probabilities: [[Double]],
+        target: [Int]
+    ) throws -> Alignment {
         guard !probabilities.isEmpty, !target.isEmpty else { throw AlignmentError.emptyInput }
 
         // The extended sequence: blank, symbol, blank, symbol, … blank.
@@ -130,6 +157,7 @@ public struct CTCForcedAligner: Sendable {
             state = stateCount - 2
         }
         guard previous[state] > negativeInfinity else { throw AlignmentError.emptyInput }
+        let score = previous[state] / Double(frameCount)
 
         // Walk back, recording which frames each state held.
         var statePerFrame = [Int](repeating: 0, count: frameCount)
@@ -169,6 +197,6 @@ public struct CTCForcedAligner: Sendable {
             }
             cursor = end
         }
-        return spans
+        return Alignment(spans: spans, score: score)
     }
 }

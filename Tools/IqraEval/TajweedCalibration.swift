@@ -2183,6 +2183,52 @@ extension TajweedCalibration {
             // Every qalqalah the analyser measured, guard open, to see whether the echo
             // is even resolvable. The model advances 40 ms a frame and a bounce runs 20 to
             // 60, so this asks whether the thing being timed is bigger than the ruler.
+            // Which reading does the audio support? Aligned twice per qalqalah — once
+            // against the phonemes the text calls for, once with the bounce deleted — so
+            // the two hypotheses differ in nothing but the sound being tested.
+            var supports: [Double] = []
+            let scorer = HypothesisScorer()
+            let aligner2 = CTCForcedAligner(blank: 0)
+            for piece in log.segments {
+                let from = Int(piece.start * AudioChunk.canonicalSampleRate)
+                let to = Int(piece.end * AudioChunk.canonicalSampleRate)
+                guard from >= 0, to <= audio.samples.count, to > from else { continue }
+                let chunk = AudioChunk(samples: Array(audio.samples[from..<to]), startTime: 0)
+                let inside = log.words.filter {
+                    guard let a = $0.start, let b = $0.end else { return false }
+                    return a < piece.end && b > piece.start
+                }
+                var symbols: [Int] = []
+                var seen = Set<Int>()
+                for word in inside where !seen.contains(word.index) {
+                    seen.insert(word.index)
+                    guard let e = script[VerseReference(surah: word.surah, ayah: word.ayah)]
+                    else { continue }
+                    symbols.append(contentsOf: e.symbols.map(Int.init))
+                    break   // one āyah's script per segment is enough to test the idea
+                }
+                guard symbols.count > 4,
+                      let obs = try? await model.probabilities(for: chunk),
+                      let ph = obs.probabilities["phonemes"],
+                      (try? aligner2.scored(probabilities: ph, target: symbols)) != nil
+                else { continue }
+                for position in symbols.indices
+                where symbols[position] == 38 {
+                    if let c = scorer.compare(
+                        probabilities: ph, symbols: symbols, at: position, rule: .qalqalah
+                    ) {
+                        supports.append(c.support)
+                    }
+                }
+            }
+            if !supports.isEmpty {
+                let sorted = supports.sorted()
+                let negative = supports.count { $0 < 0 }
+                print("    qalqalah hypotheses tested      \(supports.count)")
+                print("      median support for the text   \(format(sorted[sorted.count / 2], 4))")
+                print("      audio prefers the mistake in  \(negative) of \(supports.count)")
+            }
+
             let echoes = pieces.filter { $0.rule == .qalqalah }.compactMap(\.measurement)
             if !echoes.isEmpty {
                 let seconds = echoes.map(\.observed).sorted()
