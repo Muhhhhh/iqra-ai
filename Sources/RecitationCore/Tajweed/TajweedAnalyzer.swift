@@ -124,6 +124,17 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
     public let message: String
     /// What was measured vs. expected, for debugging and threshold calibration.
     public let measurement: Measurement?
+    /// Character offsets within the word's display text, when the letters could be
+    /// identified exactly.
+    ///
+    /// Set only when the text-side rule detector finds the same number of occurrences of
+    /// this rule in this word as the audio measured. Those are two independent rule
+    /// engines — a hand-written one over the Uthmani text, and the phonetiser the model was
+    /// trained against — and where they disagree about how many madds a word holds, there
+    /// is no way to know which letters the measurement belongs to. Pointing at a letter
+    /// that was recited correctly is the one failure this app is built to avoid, so it
+    /// stays nil and the note falls back to naming the word.
+    public let letters: Range<Int>?
     /// Which occurrence within the word this is, 1-based, and how many the word holds.
     ///
     /// A word is not one elongation. 22.4% of the words in the muṣḥaf that carry any madd
@@ -153,6 +164,7 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
         confidence: TajweedConfidence,
         message: String,
         measurement: Measurement? = nil,
+        letters: Range<Int>? = nil,
         occurrence: (index: Int, of: Int)? = nil
     ) {
         self.id = id
@@ -163,6 +175,7 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
         self.confidence = confidence
         self.message = message
         self.measurement = measurement
+        self.letters = letters
         self.occurrence = occurrence
     }
 
@@ -170,7 +183,7 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
         lhs.id == rhs.id && lhs.rule == rhs.rule && lhs.targetIndex == rhs.targetIndex
             && lhs.reference == rhs.reference && lhs.timeRange == rhs.timeRange
             && lhs.confidence == rhs.confidence && lhs.message == rhs.message
-            && lhs.measurement == rhs.measurement
+            && lhs.measurement == rhs.measurement && lhs.letters == rhs.letters
             && lhs.occurrence?.index == rhs.occurrence?.index
             && lhs.occurrence?.of == rhs.occurrence?.of
     }

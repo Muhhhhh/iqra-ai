@@ -1347,6 +1347,19 @@ enum TajweedCalibration {
         var ghunnahAttempted = 0
         var ghunnahCaught = 0
         var falseByRule: [TajweedRule: Int] = [:]
+        var withLetters = 0
+        var wordsCompared = 0
+        var wordsAgreed = 0
+        func bucket(_ rule: TajweedRule) -> String {
+            switch rule {
+            case .maddLazim: return "long"
+            case .maddWajibMuttasil, .maddJaizMunfasil: return "four"
+            default: return "natural"
+            }
+        }
+        func bucketFor(_ harakat: Int) -> String {
+            harakat >= 6 ? "long" : harakat > 2 ? "four" : "natural"
+        }
         var qalqalaAttempted = 0
         var qalqalaCaught = 0
 
@@ -1394,10 +1407,47 @@ enum TajweedCalibration {
                     )
                 }
 
+                // Do the two rule engines even agree on how many madds a word holds?
+                // The letters a note points at come from the text-side detector, matched
+                // by ordinal; where the counts differ there is no safe match to make.
+                do {
+                    var fromText: [String: Int] = [:]
+                    for occurrence in TajweedRuleDetector.occurrences(in: target)
+                    where occurrence.rule.isMadd {
+                        fromText["\(occurrence.targetIndex):\(bucket(occurrence.rule))",
+                                 default: 0] += 1
+                    }
+                    var fromScript: [String: Int] = [:]
+                    if let e = script[verse.reference] {
+                        var i = 0
+                        let syms = e.symbols
+                        while i < syms.count {
+                            let c = syms[i]
+                            var j = i + 1
+                            while j < syms.count, syms[j] == c { j += 1 }
+                            if [27, 28, 29, 30, 31].contains(Int(c)), j - i >= 2,
+                               i < e.wordOfPhoneme.count {
+                                let word = target.flattenedWords.first {
+                                    $0.reference == verse.reference
+                                }.map { $0.globalIndex + Int(e.wordOfPhoneme[i]) } ?? -1
+                                fromScript["\(word):\(bucketFor(j - i))", default: 0] += 1
+                            }
+                            i = j
+                        }
+                    }
+                    for key in Set(fromText.keys).union(fromScript.keys) {
+                        wordsCompared += 1
+                        if fromText[key] == fromScript[key] { wordsAgreed += 1 }
+                    }
+                }
+
                 ayatTested += 1
                 let clean = await analyzer.analyze(segments: [segment(audio)], target: target)
                 falseFlags += clean.count
-                for note in clean { falseByRule[note.rule, default: 0] += 1 }
+                for note in clean {
+                    falseByRule[note.rule, default: 0] += 1
+                    if note.letters != nil { withLetters += 1 }
+                }
                 examinedClean += await analyzer.coverage().examined
 
                 // Shorten an elongation and see whether it is noticed. Cutting audio out
@@ -1614,6 +1664,10 @@ enum TajweedCalibration {
         print("  āyāt tested          \(ayatTested)")
         print("  examined             \(examinedClean) phonemes carrying a rule")
         print("  FALSE FLAGS          \(falseFlags) on correct recitation")
+        print("    pinned to letters  \(withLetters) of \(falseFlags)"
+              + "  (the rest name only the word)")
+        print("  text vs phonetiser   \(wordsAgreed)/\(wordsCompared) word-and-rule groups agree"
+              + "  (\(pct(Double(wordsAgreed) / Double(max(wordsCompared, 1)))))")
         for (rule, count) in falseByRule.sorted(by: { $0.value > $1.value }) {
             print("    \(rule.rawValue.padding(toLength: 19, withPad: " ", startingAt: 0))\(count)")
         }

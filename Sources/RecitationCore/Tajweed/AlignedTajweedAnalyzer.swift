@@ -318,6 +318,18 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             wordsByVerse[word.reference, default: []].append(word)
         }
 
+        // Where each rule falls in the letters, according to the text alone. Independent
+        // of anything heard, so it is exact — this is what colours the page — and it is
+        // the only thing that can turn a measurement into "these letters, here".
+        var textual: [String: [TajweedOccurrence]] = [:]
+        for occurrence in TajweedRuleDetector.occurrences(in: target) {
+            textual["\(occurrence.targetIndex):\(occurrence.rule.rawValue)", default: []]
+                .append(occurrence)
+        }
+        for key in textual.keys {
+            textual[key]?.sort { $0.range.lowerBound < $1.range.lowerBound }
+        }
+
         var notes: [TajweedNote] = []
         var required = 0
         var examined = 0
@@ -398,6 +410,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 owner: owner,
                 symbols: symbols,
                 supported: supported,
+                textual: textual,
                 examined: &examined
             )
             if options.judgesGhunnahHold {
@@ -523,6 +536,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
         symbols: [Int],
         supported: Set<Int>,
+        textual: [String: [TajweedOccurrence]],
         examined: inout Int
     ) -> [TajweedNote] {
         let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
@@ -575,15 +589,22 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
         // Number each elongation within its word, so a note can say which one it means.
         // A word carrying three madds and one complaint is otherwise a riddle.
+        //
+        // Numbered per rule as well as per word, because that is how the letters are found
+        // below: the text-side detector groups its occurrences the same way, so the nth
+        // four-count madd of a word can be matched to the nth set of characters carrying
+        // one.
         var ordinal: [Int: (index: Int, of: Int)] = [:]
-        var byWord: [Int: [Int]] = [:]
+        var byWordAndRule: [String: [Int]] = [:]
         for (position, entry) in measured.enumerated() {
             guard owner.indices.contains(entry.range.lowerBound) else { continue }
-            byWord[owner[entry.range.lowerBound].word.globalIndex, default: []].append(position)
+            let word = owner[entry.range.lowerBound].word.globalIndex
+            let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
+            byWordAndRule["\(word):\(rule.rawValue)", default: []].append(position)
         }
-        for (_, positions) in byWord {
+        for (_, positions) in byWordAndRule {
             let ordered = positions.sorted { measured[$0].range.lowerBound < measured[$1].range.lowerBound }
-            for (offset, position) in ordered.enumerated() where ordered.count > 1 {
+            for (offset, position) in ordered.enumerated() {
                 ordinal[position] = (offset + 1, ordered.count)
             }
         }
@@ -631,13 +652,27 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
                 let start = Double(entry.startFrame) * 0.04
                 let which = ordinal[position]
+                let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
+
+                // The letters, but only when the two rule engines agree on how many of
+                // this rule the word holds. They are independent — a hand-written detector
+                // over the Uthmani text, and the phonetiser the model was trained on — and
+                // a disagreement means there is no telling which madd is which. Pointing
+                // at a letter that was recited correctly is worse than pointing at nothing.
+                let candidates = textual["\(word.globalIndex):\(rule.rawValue)"] ?? []
+                let letters: Range<Int>? = {
+                    guard let which, candidates.count == which.of,
+                          which.index >= 1, which.index <= candidates.count
+                    else { return nil }
+                    return candidates[which.index - 1].range
+                }()
                 let where_ = which.map {
                     " (the \(Self.ordinals[$0.index] ?? "\($0.index)th") of "
                         + "\(Self.cardinals[$0.of] ?? "\($0.of)") in this word)"
                 } ?? ""
                 notes.append(
                     TajweedNote(
-                        rule: madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols),
+                        rule: rule,
                         targetIndex: word.globalIndex,
                         reference: word.reference,
                         timeRange: start...(start + entry.seconds),
@@ -648,6 +683,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                                 : "This sounds longer than the \(entry.harakat) harakāt the text asks for\(where_).")
                             : "This elongation\(where_) sounds short — it should run about \(entry.harakat) harakāt.",
                         measurement: .init(observed: entry.seconds, expected: expected, unit: "s"),
+                        letters: letters,
                         occurrence: which
                     )
                 )
