@@ -327,6 +327,48 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
     // MARK: - Analysis
 
+    /// One āyah at a time, cut from the segment by the matcher's own word timings.
+    ///
+    /// The unit is not a detail. Forced alignment decays over long spans, and the app
+    /// closes a segment at twenty seconds — several āyāt — where every threshold here was
+    /// fitted on one. Measured on a real recorded session, the qalqalah check read 46.5%
+    /// of ordinary recitation as a missing bounce over whole segments and 3.6% over āyāt,
+    /// against a floor of 2.6% on five qurrāʾ. The difference was entirely the unit.
+    ///
+    /// Madd was left on segments when qalqalah moved, which is the likeliest reason it
+    /// catches 7 shortened elongations in 47.
+    private func perVerse(_ segment: AlignedAudioSegment) -> [AlignedAudioSegment] {
+        var spans: [VerseReference: (start: Double, end: Double, words: [WordEvaluation])] = [:]
+        for evaluation in segment.words {
+            guard let range = evaluation.timeRange, evaluation.status == .correct else { continue }
+            var entry = spans[evaluation.reference]
+                ?? (range.lowerBound, range.upperBound, [])
+            entry.start = min(entry.start, range.lowerBound)
+            entry.end = max(entry.end, range.upperBound)
+            entry.words.append(evaluation)
+            spans[evaluation.reference] = entry
+        }
+
+        let rate = AudioChunk.canonicalSampleRate
+        var slices: [AlignedAudioSegment] = []
+        for (_, entry) in spans.sorted(by: { $0.key < $1.key }) {
+            let from = Int((entry.start - segment.audio.startTime) * rate)
+            let to = Int((entry.end - segment.audio.startTime) * rate)
+            guard from >= 0, to <= segment.audio.samples.count, to - from > 3200 else { continue }
+            slices.append(
+                AlignedAudioSegment(
+                    audio: AudioChunk(
+                        samples: Array(segment.audio.samples[from..<to]),
+                        startTime: entry.start
+                    ),
+                    transcription: segment.transcription,
+                    words: entry.words
+                )
+            )
+        }
+        return slices
+    }
+
     public func analyze(
         segments: [AlignedAudioSegment],
         target: RecitationTarget
@@ -353,7 +395,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         var required = 0
         var examined = 0
 
-        for segment in segments {
+        for segment in segments.flatMap({ perVerse($0) }) {
             // Only words this segment actually carries, in order — aligning an āyah's
             // whole phoneme sequence to audio holding half of it would misplace
             // everything after the join.
@@ -426,6 +468,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
             notes += maddNotes(
                 spans: spans,
+                audio: segment.audio,
                 owner: owner,
                 symbols: symbols,
                 supported: supported,
@@ -561,6 +604,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// heard.
     private func maddNotes(
         spans: [CTCForcedAligner.Span],
+        audio: AudioChunk,
         owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
         symbols: [Int],
         supported: Set<Int>,
@@ -611,7 +655,16 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             let from = before?.frames.upperBound ?? lower
             let to = after?.frames.lowerBound ?? upper
             let frames = to > from ? to - from : upper - lower
-            let seconds = Double(frames) * 0.04   // the model's frame rate
+            // The vowel inside the gap, rather than the whole gap.
+            //
+            // The gap contains the transitions either side, and those do not shorten when
+            // the elongation does — which is why halving a madd moved this measure by so
+            // little that the threshold had to sit at 0.8, and why 32 of 47 shortened
+            // elongations went unnoticed. The sustained vowel is the loud part between the
+            // consonants, so the span above half the local peak tracks it far more closely
+            // than the distance between two spikes does.
+            let seconds = sustained(in: audio, frames: from..<(from + frames))
+                ?? Double(frames) * 0.04
             measured.append((run.range, run.harakat, seconds, from, confident))
         }
 
@@ -774,6 +827,41 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         return owner[next].word.globalIndex == owner[range.lowerBound].word.globalIndex
             ? .maddWajibMuttasil
             : .maddJaizMunfasil
+    }
+
+    /// How long the loud, sustained part of a stretch lasts, in seconds.
+    ///
+    /// Measured relative to that stretch's own peak, so it needs no absolute level and is
+    /// unaffected by how close the reciter sits to the microphone. Returns nil where the
+    /// region is too short or too quiet to say anything about, and the caller falls back
+    /// to the raw span.
+    private func sustained(in audio: AudioChunk, frames: Range<Int>) -> Double? {
+        let rate = AudioChunk.canonicalSampleRate
+        let from = Int(Double(frames.lowerBound) * 0.04 * rate)
+        let to = Int(Double(frames.upperBound) * 0.04 * rate)
+        guard from >= 0, to <= audio.samples.count, to - from >= 320 else { return nil }
+
+        let window = 160                       // 10 ms, finer than the model's own frame
+        var energies: [Float] = []
+        var index = from
+        while index + window <= to {
+            var sum: Float = 0
+            for offset in index..<(index + window) { sum += audio.samples[offset] * audio.samples[offset] }
+            energies.append((sum / Float(window)).squareRoot())
+            index += window
+        }
+        guard let peak = energies.max(), peak > 1e-5 else { return nil }
+
+        // The longest unbroken run above half the peak. Longest rather than total: a madd
+        // is one held sound, and counting every loud frame in the region would add in the
+        // consonant either side of it.
+        let threshold = peak * 0.5
+        var best = 0, current = 0
+        for energy in energies {
+            current = energy >= threshold ? current + 1 : 0
+            best = max(best, current)
+        }
+        return best > 0 ? Double(best) * 0.01 : nil
     }
 
     /// Runs of consecutive phonemes that must all be nasalised — one ghunnah each.

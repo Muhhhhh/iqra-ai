@@ -983,6 +983,7 @@ struct Arguments {
     var tajweedNegatives = false
     var replayPath: String?
     var hypothesisTest = false
+    var maddShortfall: Double?
     /// Remove the whole word rather than just the spike.
     var tajweedRemoveWholeWord = false
     /// Expected phoneme sequence to force-align, words separated by spaces.
@@ -1063,6 +1064,7 @@ struct Arguments {
             case "--tajweed-negatives": tajweedNegatives = true
             case "--replay": replayPath = next()
             case "--hypothesis": hypothesisTest = true
+            case "--madd-shortfall": maddShortfall = next().flatMap { Double($0) }
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true

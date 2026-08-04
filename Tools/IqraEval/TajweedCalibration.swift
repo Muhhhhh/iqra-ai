@@ -1330,7 +1330,10 @@ enum TajweedCalibration {
         let analyzer = AlignedTajweedAnalyzer(
             model: model,
             script: script,
-            options: .init(judgesSifat: arguments.judgeSifat)
+            options: .init(
+                maddShortfall: arguments.maddShortfall ?? AlignedTajweedAnalyzer.Options.default.maddShortfall,
+                judgesSifat: arguments.judgeSifat
+            )
         )
         let library = ReciterAudioLibrary()
         let aligner = CTCForcedAligner(blank: 0)
