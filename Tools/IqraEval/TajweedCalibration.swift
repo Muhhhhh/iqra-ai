@@ -905,6 +905,8 @@ enum TajweedCalibration {
         var maddCaught = 0
         var falseMaddAttempted = 0
         var falseMaddCaught = 0
+        var ghunnahAttempted = 0
+        var ghunnahCaught = 0
 
         for surah in arguments.surahs {
             let surahTarget = try await store.target(surah: surah)
@@ -1026,6 +1028,34 @@ enum TajweedCalibration {
                     }
                 }
 
+                // A ghunnah run through rather than held: the nasal compressed to half
+                // its length, which is what a reciter who does not dwell on the nūn
+                // actually produces.
+                if let entryScript = script[verse.reference],
+                   let obs = try? await model.probabilities(for: audio),
+                   let ph = obs.probabilities["phonemes"],
+                   let sp = try? aligner.align(probabilities: ph, target: entryScript.symbols.map(Int.init)) {
+                    var position = 0
+                    var found: Int?
+                    while position < entryScript.ghonna.count {
+                        if entryScript.ghonna[position] == 1 { found = position; break }
+                        position += 1
+                    }
+                    if let index = found,
+                       let span = sp.first(where: { $0.index == index }),
+                       let next = sp.first(where: { $0.index > index }) {
+                        let rate = AudioChunk.canonicalSampleRate
+                        let from = Int((obs.startTime + Double(span.frames.lowerBound) * obs.frameDuration) * rate)
+                        let to = Int((obs.startTime + Double(next.frames.lowerBound) * obs.frameDuration) * rate)
+                        if from >= 0, to <= audio.samples.count, to - from > 1600,
+                           let rushed = timeCompress(audio, range: from..<to, factor: 0.5) {
+                            ghunnahAttempted += 1
+                            let after = await analyzer.analyze(segments: [segment(rushed)], target: target)
+                            if after.count > clean.count { ghunnahCaught += 1 }
+                        }
+                    }
+                }
+
                 // The opposite mistake: a *single* vowel, which the text writes short,
                 // stretched out into an elongation.
                 if let entryScript = script[verse.reference],
@@ -1101,6 +1131,11 @@ enum TajweedCalibration {
         print("  attempted            \(maddAttempted)")
         print("  CAUGHT               \(maddCaught)/\(maddAttempted)  "
               + "(\(pct(Double(maddCaught) / Double(max(maddAttempted, 1)))))")
+        print("")
+        print("── with one ghunnah run through instead of held ".padding(toLength: 72, withPad: "─", startingAt: 0))
+        print("  attempted            \(ghunnahAttempted)")
+        print("  CAUGHT               \(ghunnahCaught)/\(ghunnahAttempted)  "
+              + "(\(pct(Double(ghunnahCaught) / Double(max(ghunnahAttempted, 1)))))")
         print("")
         print("── with a short vowel stretched into an elongation ".padding(toLength: 72, withPad: "─", startingAt: 0))
         print("  attempted            \(falseMaddAttempted)")

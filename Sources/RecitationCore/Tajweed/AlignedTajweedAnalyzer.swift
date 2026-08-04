@@ -80,6 +80,9 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// may want it. Left off because a check that is wrong four times for every time
         /// it is right does not belong on by default in this app.
         public var flagsOverlongVowels: Bool
+        /// How far below the reciter's own ghunnahs one must fall before it is
+        /// questioned. Set by the same sweep as `maddShortfall`.
+        public var ghunnahShortfall: Double
         /// Mean alignment confidence a *word* needs before its elongations are judged.
         ///
         /// Forced alignment returns a path whatever it is given, so this asks whether the
@@ -107,6 +110,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             maddShortfall: Double = 0.8,
             maddExcess: Double = 1.8,
             flagsOverlongVowels: Bool = false,
+            ghunnahShortfall: Double = 0.7,
             wordSupport: Double = 0.5,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
@@ -115,6 +119,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.maddShortfall = maddShortfall
             self.maddExcess = maddExcess
             self.flagsOverlongVowels = flagsOverlongVowels
+            self.ghunnahShortfall = ghunnahShortfall
             self.wordSupport = wordSupport
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
@@ -165,6 +170,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// almost exactly where halving the elongation lands — and halved madds were caught
     /// 0 times in 42. Comparing like with like removes the extrapolation.
     private var durationsByHarakat: [Int: [Double]] = [:]
+    /// How long the reciter holds a ghunnah, gathered across the session.
+    private var ghunnahHolds: [Double] = []
 
     public init(model: MuaalemTajweedAnalyzer, script: PhonemeScript, options: Options = .default) {
         self.model = model
@@ -260,6 +267,13 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 supported: supported,
                 examined: &examined
             )
+            notes += ghunnahNotes(
+                spans: spans,
+                owner: owner,
+                supported: supported,
+                examined: &examined
+            )
+            required += ghunnahRuns(in: owner).count
             // What this analyzer will actually try to judge: elongations, minus the final
             // vowel of the passage, and minus the short ones unless over-length checking
             // is on. Counting anything else would make the coverage report compare two
@@ -471,6 +485,95 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 durationsByHarakat[entry.harakat]!.removeFirst()
             }
         }
+        return notes
+    }
+
+    /// Runs of consecutive phonemes that must all be nasalised — one ghunnah each.
+    ///
+    /// A doubled nūn is written twice in the phonetic script, so the sound to be held
+    /// spans two symbols rather than one.
+    private func ghunnahRuns(
+        in owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)]
+    ) -> [Range<Int>] {
+        var runs: [Range<Int>] = []
+        var index = 0
+        while index < owner.count {
+            guard owner[index].ghonna == 1 else { index += 1; continue }
+            var end = index + 1
+            while end < owner.count, owner[end].ghonna == 1 { end += 1 }
+            // Only the doubled letter — نّ and مّ, written twice in the script.
+            //
+            // Every position the text marks for nasalisation is not the same sound. A
+            // doubled nūn is a clean sustained hold; the nasal of an ikhfāʾ or an iqlāb
+            // is a transition into the following letter, and how long it lasts depends on
+            // what follows rather than on the rule. Pooling them gave a median that
+            // described none of them: at every threshold from 0.8 down to 0.4 it
+            // questioned 75 to 99 correct ghunnahs to catch three or four rushed ones.
+            if end - index >= 2 { runs.append(index..<end) }
+            index = end
+        }
+        return runs
+    }
+
+    /// Was the ghunnah held for its two harakāt?
+    ///
+    /// A ghunnah is two things at once: a nasal sound, and a nasal sound *held for two
+    /// counts*. Only the first has resisted measurement. Whether the model can hear
+    /// nasality — it cannot, reliably — has no bearing on whether the letter lasted as
+    /// long as it should have, and that half is measurable with exactly the machinery
+    /// that already checks madd.
+    ///
+    /// So this catches the reciter who says the nūn but runs straight past it, which is
+    /// the commoner fault of the two and the one a beginner makes. It cannot catch the
+    /// reciter who holds the letter for the right length without nasalising it: to this
+    /// check that is a correct ghunnah, and it says nothing about it.
+    private func ghunnahNotes(
+        spans: [CTCForcedAligner.Span],
+        owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
+        supported: Set<Int>,
+        examined: inout Int
+    ) -> [TajweedNote] {
+        let byIndex = Dictionary(spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
+        var measured: [(range: Range<Int>, seconds: Double, startFrame: Int)] = []
+
+        for run in ghunnahRuns(in: owner) {
+            guard let first = byIndex[run.lowerBound] else { continue }
+            // From the nasal's own onset to the next sound's: the hold lives between
+            // spikes, not inside one. Same lesson as madd, and it cost 42 undetected
+            // elongations to learn the first time.
+            let next = spans.first { $0.index >= run.upperBound }
+            let from = first.frames.lowerBound
+            let to = next?.frames.lowerBound ?? (byIndex[run.upperBound - 1]?.frames.upperBound ?? from)
+            guard to > from else { continue }
+            measured.append((run, Double(to - from) * 0.04, from))
+        }
+
+        var notes: [TajweedNote] = []
+        if ghunnahHolds.count >= options.minimumBaselineMadds {
+            let expected = ghunnahHolds.sorted()[ghunnahHolds.count / 2]
+            for entry in measured {
+                guard owner.indices.contains(entry.range.lowerBound) else { continue }
+                let word = owner[entry.range.lowerBound].word
+                guard supported.contains(word.globalIndex) else { continue }
+                examined += 1
+                guard entry.seconds < expected * options.ghunnahShortfall else { continue }
+                let start = Double(entry.startFrame) * 0.04
+                notes.append(
+                    TajweedNote(
+                        rule: .ghunnah,
+                        targetIndex: word.globalIndex,
+                        reference: word.reference,
+                        timeRange: start...(start + entry.seconds),
+                        confidence: .low,
+                        message: "This ghunnah sounds short — the nūn or mīm should be held about two harakāt.",
+                        measurement: .init(observed: entry.seconds, expected: expected, unit: "s")
+                    )
+                )
+            }
+        }
+
+        ghunnahHolds.append(contentsOf: measured.map(\.seconds))
+        if ghunnahHolds.count > 120 { ghunnahHolds.removeFirst(ghunnahHolds.count - 120) }
         return notes
     }
 
