@@ -259,7 +259,7 @@ private struct TajweedSettings: View {
         Form {
             Section {
                 Toggle("Colour tajweed letters", isOn: $settings.showsTajweed)
-                Text("Where a rule applies follows from the Uthmani text, so this is exact and does not depend on your recitation. Only the letters the rule falls on are coloured — the nūn that carries a ghunnah, the qāf that is echoed in qalqalah — not the whole word around them.")
+                Text("Where a rule applies follows from the Uthmani text, so this is exact and does not depend on your recitation. All eleven rules below are detected — the four madd lengths, ghunnah, qalqalah and the five nūn-sākinah rules.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -272,7 +272,7 @@ private struct TajweedSettings: View {
 
                 if settings.showsTajweed && settings.prefersCalligraphicPage {
                     Label(
-                        "The calligraphic fonts draw a whole word as one glyph — رَّسُولٍ is the single character ﮙ — so there are no letters to colour, and the page shows no tajweed colour. Switch to Unicode text to see it. Colouring the entire word instead would claim the rule applies to letters that do not carry it.",
+                        "In the calligraphy a whole word is one glyph — رَّسُولٍ is the single character ﮙ — so its letters cannot be coloured individually. The rule is marked by a coloured bar above the word instead. Switch to Unicode text to colour the exact letters the rule falls on.",
                         systemImage: "info.circle"
                     )
                     .font(.caption)
@@ -344,8 +344,8 @@ private struct TajweedSettings: View {
 
 private struct TajweedLegend: View {
     private let shown: [TajweedRule] = [
-        .maddLazim, .maddWajibMuttasil, .maddJaizMunfasil,
-        .ghunnah, .qalqalah, .iqlab, .idgham, .ikhfa, .izhar, .maddAsli,
+        .maddLazim, .maddWajibMuttasil, .maddJaizMunfasil, .maddAsli,
+        .ghunnah, .qalqalah, .iqlab, .idgham, .idghamBilaGhunnah, .ikhfa, .izhar,
     ]
 
     var body: some View {

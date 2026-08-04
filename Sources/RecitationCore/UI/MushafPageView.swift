@@ -426,6 +426,25 @@ private struct MushafWordView: View {
 
     /// A verdict about what was recited always outranks a tajweed tint: being told a
     /// word was wrong matters more than being shown which rule it carries.
+    /// The rule to mark above the word when its letters cannot be coloured.
+    ///
+    /// In the calligraphic fonts a whole word is a single glyph, so per-letter colouring
+    /// is impossible and the page showed no tajweed at all — which, since the calligraphy
+    /// is the default, meant the rules the app detects exactly were invisible to most
+    /// readers most of the time.
+    ///
+    /// A mark *above* the word rather than a tint on it. The letters stay as Uthman Taha
+    /// set them, and the page keeps one visual grammar: what the text requires is written
+    /// above, what you recited is marked below.
+    private var ruleAboveWord: TajweedRule? {
+        guard isCalligraphic, !tajweed.isEmpty else { return nil }
+        switch status {
+        case .wrong, .skipped: return nil
+        case .correct, .uncertain, .notYetRecited:
+            return TajweedStyle.dominant(tajweed.map(\.rule))
+        }
+    }
+
     private var showsTajweed: Bool {
         guard !isCalligraphic, !tajweed.isEmpty else { return false }
         switch status {
@@ -473,6 +492,16 @@ private struct MushafWordView: View {
             // as it fills in, and the muṣḥaf's line breaks stay where they belong.
             .opacity(isRevealed ? 1 : 0)
             .animation(.easeOut(duration: 0.28), value: isRevealed)
+            .overlay(alignment: .top) {
+                if isRevealed, let rule = ruleAboveWord {
+                    Capsule()
+                        .fill(TajweedStyle.colour(for: rule).opacity(0.85))
+                        .frame(height: max(1.5, fontSize * 0.035))
+                        .padding(.horizontal, fontSize * 0.06)
+                        .offset(y: -fontSize * 0.06)
+                        .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if isRevealed, mode.reportsMistakes, let colour = WordStatusStyle.underline(for: status) {
                     Capsule()
