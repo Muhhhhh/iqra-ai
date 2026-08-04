@@ -310,7 +310,7 @@ public struct MushafPageView: View {
             } else {
                 HStack(spacing: fontSize * 0.22) {
                     ForEach(line.words) { word in
-                        wordView(word)
+                        wordView(word, calligraphicFont: Self.basmalaFont(size: fontSize))
                     }
                 }
                 // Arabic runs right to left, and a plain HStack does not. Without this the
@@ -355,8 +355,19 @@ public struct MushafPageView: View {
         return line.number == last.number && line.words.count <= 3
     }
 
+    /// Al-Fātiḥah's basmala, in Al-Fātiḥah's font.
+    ///
+    /// The QCF fonts hold one page each and no page but the first contains a basmala
+    /// glyph, so the only way to set it in Uthman Taha's hand anywhere else is to reach
+    /// for page 1's font by name. Registered on demand; nil if the fonts are not
+    /// installed, and the caller falls back to the muṣḥaf text face.
+    static func basmalaFont(size: CGFloat) -> Font? {
+        guard QCFFont.isAvailable, QCFFont.register(page: 1) else { return nil }
+        return .custom(QCFFont.name(forPage: 1), fixedSize: size * 0.62)
+    }
+
     @ViewBuilder
-    private func wordView(_ word: MushafWord) -> some View {
+    private func wordView(_ word: MushafWord, calligraphicFont: Font? = nil) -> some View {
         switch word.kind {
         case .ayahEnd:
             // The QCF fonts carry the āyah ornament as a glyph of their own, already
@@ -379,12 +390,16 @@ public struct MushafPageView: View {
                 // A word with no glyph code cannot be set in the calligraphic font — the
                 // basmala is the only one, since the layout data gives that line no words
                 // — so it falls back to the muṣḥaf text face along with its text.
-                font: layout.usesCalligraphy && word.code.isEmpty
-                    ? QuranFont.mushaf(size: fontSize * 0.88)
-                    : layout.wordFont,
-                displayText: layout.usesCalligraphy && !word.code.isEmpty ? word.code : word.text,
+                font: calligraphicFont
+                    ?? (layout.usesCalligraphy && word.code.isEmpty
+                        ? QuranFont.mushaf(size: fontSize * 0.88)
+                        : layout.wordFont),
+                displayText: !word.code.isEmpty
+                    && (calligraphicFont != nil || layout.usesCalligraphy)
+                    ? word.code : word.text,
                 sourceText: word.text,
-                isCalligraphic: layout.usesCalligraphy && !word.code.isEmpty,
+                isCalligraphic: !word.code.isEmpty
+                    && (calligraphicFont != nil || layout.usesCalligraphy),
                 tajweed: word.targetIndex.flatMap { tajweed[$0] } ?? [],
                 tajweedFinding: word.targetIndex.flatMap { tajweedFindings[$0] },
                 mode: mode,

@@ -720,7 +720,10 @@ struct BasmalaTests {
         )
         let fromDatabase = try await store.basmalaWords()
         let written = try #require(Verse.basmala(surah: 2)).words.map(\.text)
-        #expect(fromDatabase == written)
+        #expect(fromDatabase.map(\.text) == written)
+        // And every one carries a glyph, or the basmala draws as four blanks on a
+        // calligraphic page. They are page 1's glyphs, drawn in page 1's font.
+        #expect(fromDatabase.allSatisfy { !$0.code.isEmpty })
     }
 
     @Test("At-Tawbah opens without one even at its first āyah")
