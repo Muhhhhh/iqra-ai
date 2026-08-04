@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.checkClock {
+            try await checkAlignmentClock(arguments, reciter: reciter, model: analyzer)
+            return
+        }
+
         if let _ = arguments.trainingOutput {
             try await exportTrainingFrames(arguments, reciter: reciter, model: analyzer, store: store)
             return
@@ -475,6 +480,99 @@ enum TajweedCalibration {
         return AudioChunk(samples: samples, startTime: chunk.startTime)
     }
 
+    /// Does the alignment's clock agree with the audio's?
+    ///
+    /// Everything the frame exporter does rests on one conversion: an alignment frame
+    /// index times the frame duration gives a time in seconds, and that time divided by
+    /// the log-mel hop gives a row. If the model's frames are not the duration assumed,
+    /// every extracted frame lands somewhere other than where it was meant to, which is
+    /// exactly what the training data behaved like — every ṣifah at its noise floor,
+    /// including voiced against voiceless.
+    ///
+    /// So: three clocks that must agree, printed side by side.
+    static func checkAlignmentClock(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate(),
+              let frontendURL = MuaalemFeatures.locate()
+        else { throw IqraEval.EvalError.missing("phoneme script or front-end") }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let features = try MuaalemFeatures(resourceURL: frontendURL)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+
+        print("Alignment clock")
+        print("")
+        for reference in [VerseReference(surah: 112, ayah: 1),
+                          VerseReference(surah: 36, ayah: 1),
+                          VerseReference(surah: 2, ayah: 2),
+                          VerseReference(surah: 2, ayah: 20)] {
+            guard let entry = script[reference],
+                  let url = try? await library.fetch(reference, reciter: reciter),
+                  let audio = try? AudioFileLoader.load(url: url),
+                  let observed = try? await model.probabilities(for: audio),
+                  let phonemes = observed.probabilities["phonemes"],
+                  let spans = try? aligner.align(
+                      probabilities: phonemes,
+                      target: entry.symbols.map(Int.init)
+                  ),
+                  let last = spans.last
+            else { continue }
+
+            let rows = features.logMel(audio.samples)
+            let audioSeconds = audio.duration
+            let posteriorSeconds = Double(phonemes.count) * observed.frameDuration
+            let alignedEnd = Double(last.frames.upperBound) * observed.frameDuration
+            let melSeconds = Double(rows.count) * 0.01
+
+            print("  \(reference)")
+            print("    audio            \(format(audioSeconds, 2)) s")
+            print("    posterior frames \(phonemes.count) × \(format(observed.frameDuration, 3)) s = \(format(posteriorSeconds, 2)) s")
+            print("    last phoneme at  \(format(alignedEnd, 2)) s")
+            print("    log-mel rows     \(rows.count) × 0.01 s = \(format(melSeconds, 2)) s")
+
+            // Does a phoneme's own stretch of audio look like that phoneme? Energy is
+            // the crudest possible probe and it is enough: a vowel is loud, the closure
+            // of a stop is near silent. If these do not differ, the placements are wrong
+            // however well the clocks agree.
+            let vocabulary: [Int: String] = [
+                29: "ا", 27: "و", 28: "ي", 32: "a", 33: "u", 34: "i",
+                25: "ن", 24: "م", 2: "ب", 3: "ت", 8: "د", 21: "ق", 16: "ط",
+                12: "س", 13: "ش", 6: "ح", 23: "ل", 10: "ر",
+            ]
+            func energy(at frame: Int) -> Double {
+                let row = frame * 4
+                guard row >= 0, row < rows.count else { return 0 }
+                return Double(rows[row].reduce(0, +)) / 80
+            }
+            let shown = spans.prefix(16).map { span -> String in
+                let symbol = Int(entry.symbols[span.index])
+                let name = vocabulary[symbol] ?? "·"
+                return "\(name)\(format(energy(at: span.frames.lowerBound), 1))"
+            }
+            print("    phoneme/energy   \(shown.joined(separator: " "))")
+
+            // And the two groups that must differ if anything does.
+            var vowels: [Double] = [], stops: [Double] = []
+            for span in spans {
+                let symbol = Int(entry.symbols[span.index])
+                let value = energy(at: (span.frames.lowerBound + span.frames.upperBound) / 2)
+                if [29, 27, 28, 32, 33, 34].contains(symbol) { vowels.append(value) }
+                if [2, 3, 8, 21, 16].contains(symbol) { stops.append(value) }
+            }
+            if !vowels.isEmpty, !stops.isEmpty {
+                let v = vowels.reduce(0, +) / Double(vowels.count)
+                let t = stops.reduce(0, +) / Double(stops.count)
+                print("    vowels \(format(v, 2)) vs stops \(format(t, 2))  — vowels should be clearly louder")
+            }
+            print("")
+        }
+        print("  The posterior clock and the log-mel clock must both match the audio.")
+        print("  If they do not, every frame the exporter pulls lands in the wrong place.")
+    }
+
     // MARK: - Training data
 
     /// Write out labelled audio frames: what a ṣifah sounds like, and what it does not.
@@ -623,13 +721,21 @@ enum TajweedCalibration {
                         audio: audio, symbols: entry.symbols.map(Int.init),
                         coarse: spans, observed: observed, model: model, aligner: aligner
                       )
+                    // The span itself, not the gap to the next spike.
+                    //
+                    // Both regions matter and they answer different questions. A madd's
+                    // *duration* is the gap — the sustained vowel lives between spikes,
+                    // which is what took that check from 1 in 42 to 11 in 42. But a
+                    // phoneme's *identity* is at the spike: that is where the model
+                    // recognised it. The gap after a consonant is mostly the vowel that
+                    // follows, so sampling it labelled the vowel with the consonant's
+                    // ṣifāt — and every distinction, including voiced against voiceless,
+                    // came out at its noise floor.
                     : spans.map { span in
-                        let next = spans.first { $0.index > span.index }
-                        return (
+                        (
                             index: span.index,
                             start: Double(span.frames.lowerBound) * observed.frameDuration,
-                            end: Double(next?.frames.lowerBound ?? span.frames.upperBound)
-                                * observed.frameDuration
+                            end: Double(span.frames.upperBound) * observed.frameDuration
                         )
                       }
 

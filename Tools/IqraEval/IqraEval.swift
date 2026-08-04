@@ -998,6 +998,8 @@ struct Arguments {
     var trainingSifa: PhonemeScript.Sifa = .ghonna
     /// Re-align in short chunks before labelling frames.
     var refineAlignment = false
+    /// Print the alignment, posterior and audio clocks side by side.
+    var checkClock = false
     var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
@@ -1060,6 +1062,7 @@ struct Arguments {
             case "--nasality": nasalityTest = true
             case "--training-frames": trainingOutput = next()
             case "--refine": refineAlignment = true
+            case "--check-clock": checkClock = true
             case "--sifa":
                 let name = next() ?? ""
                 trainingSifa = PhonemeScript.Sifa.allCases.first { "\($0)" == name } ?? .ghonna

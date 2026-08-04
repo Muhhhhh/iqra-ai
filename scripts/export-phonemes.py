@@ -120,9 +120,19 @@ def main() -> int:
             symbols, words = [], []
             planes = {name: [] for name, _ in SIFAT}
             word_index = 0
-            # `sifat` is one entry per phoneme *group*, and each group carries the
-            # characters it covers, so the two are walked together.
+
+            # `sifat` is one entry per phoneme *group*, and a group spans however many
+            # characters that sound is written with — قُ is one group of two characters,
+            # للَ one group of three. Advancing the group once per character therefore
+            # desynchronises the labels from the symbols after the very first multi-
+            # character group, and every ṣifah after it describes some later phoneme.
+            #
+            # The symptom was silent and total: exported frames showed stops, fricatives
+            # and nasals all at identical mean energy, while the same alignment measured
+            # directly put vowels 3.4 units above stops. Labels that are shifted are
+            # indistinguishable from audio that carries no information.
             group_index = 0
+            remaining = len(sifat[0].phonemes) if sifat else 0
             for character in spaced.phonemes:
                 if character == " ":
                     word_index += 1
@@ -135,11 +145,14 @@ def main() -> int:
                 symbols.append(identifier)
                 words.append(min(word_index, 255))
 
+                if remaining == 0 and group_index + 1 < len(sifat):
+                    group_index += 1
+                    remaining = len(sifat[group_index].phonemes)
                 group = sifat[group_index] if group_index < len(sifat) else None
                 for name, classes in SIFAT:
                     value = getattr(group, name, None) if group else None
                     planes[name].append(classes.index(value) + 1 if value in classes else 0)
-                group_index += 1
+                remaining = max(0, remaining - 1)
 
             if not symbols:
                 continue
