@@ -71,20 +71,42 @@ public enum WordStatusStyle {
 /// closely enough to be familiar without claiming to be any particular edition.
 public enum TajweedStyle {
 
+    /// The colours of the King Fahd Complex tajweed muṣḥaf.
+    ///
+    /// Taken from the printed key rather than chosen, because a reciter who has used a
+    /// tajweed muṣḥaf already reads these: red is a permissible madd, orange a natural
+    /// one, green a ghunnah held for two counts. Inventing a palette would mean teaching
+    /// them a second one for no reason.
+    ///
+    /// Several rules deliberately share a colour, as they do in print. Ikhfāʾ, iqlāb and
+    /// ghunnah are one green — the key calls them "ikhfāʾ, and the places of ghunnah (two
+    /// harakāt)", which is one instruction to the reciter whatever the rule is named.
+    /// Idghām shares grey with letters that are written but not pronounced, for the same
+    /// reason: both mean *do not sound this on its own*.
+    ///
+    /// Iẓhār has no colour. In the muṣḥaf its letters are printed black like any other,
+    /// because iẓhār is the absence of an instruction — the nūn is simply said plainly —
+    /// and marking it would invent a rule the page does not show.
     public static func colour(for rule: TajweedRule) -> Color {
         switch rule {
-        case .maddLazim: return Color(red: 0.78, green: 0.15, blue: 0.15)
-        case .maddWajibMuttasil: return Color(red: 0.85, green: 0.42, blue: 0.10)
-        case .maddJaizMunfasil: return Color(red: 0.80, green: 0.60, blue: 0.10)
-        case .maddAsli: return Color(red: 0.45, green: 0.50, blue: 0.55)
-        case .ghunnah: return Color(red: 0.20, green: 0.55, blue: 0.35)
-        case .qalqalah: return Color(red: 0.25, green: 0.45, blue: 0.80)
-        case .idgham: return Color(red: 0.45, green: 0.35, blue: 0.70)
-        case .idghamBilaGhunnah: return Color(red: 0.55, green: 0.42, blue: 0.78)
-        case .ikhfa: return Color(red: 0.55, green: 0.40, blue: 0.60)
-        case .iqlab: return Color(red: 0.30, green: 0.55, blue: 0.65)
-        case .izhar: return Color(red: 0.40, green: 0.45, blue: 0.45)
-        case .tafkhimTarqiq, .waqf: return .secondary
+        // مدّ ٦ حركات لزوماً
+        case .maddLazim: return Color(red: 0.56, green: 0.11, blue: 0.29)
+        // مدّ واجب ٤ أو ٥ حركات
+        case .maddWajibMuttasil: return Color(red: 0.91, green: 0.22, blue: 0.55)
+        // مدّ ٢ أو ٤ أو ٦ جوازاً
+        case .maddJaizMunfasil: return Color(red: 0.90, green: 0.27, blue: 0.17)
+        // مدّ حركتان
+        case .maddAsli: return Color(red: 0.94, green: 0.54, blue: 0.16)
+        // إخفاء ، ومواقع الغُنَّة (حركتان)
+        case .ghunnah, .ikhfa, .iqlab: return Color(red: 0.12, green: 0.48, blue: 0.24)
+        // إدغام ، وما لا يُلفَظ
+        case .idgham, .idghamBilaGhunnah: return Color(red: 0.62, green: 0.62, blue: 0.62)
+        // تفخيم
+        case .tafkhimTarqiq: return Color(red: 0.11, green: 0.37, blue: 0.66)
+        // قلقلة
+        case .qalqalah: return Color(red: 0.18, green: 0.53, blue: 0.78)
+        // Unmarked in the muṣḥaf.
+        case .izhar, .waqf: return .primary
         }
     }
 

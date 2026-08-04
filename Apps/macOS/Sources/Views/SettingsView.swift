@@ -391,26 +391,45 @@ private struct TajweedSettings: View {
 }
 
 private struct TajweedLegend: View {
-    private let shown: [TajweedRule] = [
-        .maddLazim, .maddWajibMuttasil, .maddJaizMunfasil,
-        .ghunnah, .qalqalah, .iqlab, .idgham, .ikhfa, .izhar, .maddAsli,
+
+    /// The printed key of the tajweed muṣḥaf, in its own groupings.
+    ///
+    /// Not one row per `TajweedRule`. Ikhfāʾ, iqlāb and ghunnah share a colour on the page
+    /// because they share an instruction, and listing them separately would show three
+    /// identical green dots and imply a distinction the colour is not making. The colours
+    /// come from `TajweedStyle` rather than being repeated here, so the key cannot drift
+    /// from what the page actually draws.
+    private let entries: [(rule: TajweedRule, english: String, arabic: String)] = [
+        (.maddJaizMunfasil, "Madd, 2, 4 or 6 — permissibly", "مدّ ٢ أو ٤ أو ٦ جوازاً"),
+        (.maddAsli, "Madd, two harakāt", "مدّ حركتان"),
+        (.maddWajibMuttasil, "Madd wājib, 4 or 5 harakāt", "مدّ واجب ٤ أو ٥ حركات"),
+        (.maddLazim, "Madd, 6 harakāt — obligatory", "مدّ ٦ حركات لزوماً"),
+        (.ghunnah, "Ikhfāʾ, and where ghunnah falls", "إخفاء ، ومواقع الغُنَّة"),
+        (.idgham, "Idghām, and what is not pronounced", "إدغام ، وما لا يُلفَظ"),
+        (.qalqalah, "Qalqalah", "قلقلة"),
+        (.tafkhimTarqiq, "Tafkhīm", "تفخيم"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(shown, id: \.self) { rule in
+            ForEach(entries, id: \.english) { entry in
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(TajweedStyle.colour(for: rule))
+                        .fill(TajweedStyle.colour(for: entry.rule))
                         .frame(width: 9, height: 9)
-                    Text(rule.title).font(.caption)
-                    Text(rule.arabicTitle)
+                    Text(entry.english).font(.caption)
+                    Text(entry.arabic)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .environment(\.layoutDirection, .rightToLeft)
                     Spacer()
                 }
             }
+            Text("The colours of the King Fahd Complex muṣḥaf. Iẓhār is unmarked there, and is unmarked here.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
         }
     }
 }

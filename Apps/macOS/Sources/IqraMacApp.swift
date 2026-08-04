@@ -22,7 +22,7 @@ struct IqraMacApp: App {
     @State private var settings = AppSettings.shared
 
     var body: some Scene {
-        WindowGroup("Iqra") {
+        WindowGroup("Iqra AI") {
             ContentView()
                 .frame(minWidth: 980, minHeight: 640)
         }
