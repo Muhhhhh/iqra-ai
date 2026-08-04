@@ -549,16 +549,35 @@ enum TajweedCalibration {
                 for span in spans where span.index < plane.count {
                     let label = Int(plane[span.index])
                     guard label > 0, span.confidence >= 0.5 else { continue }
-                    // The *sustained* part of the sound, which lives between this spike
-                    // and the next — not inside the spike. CTC marks events, not extents,
-                    // so the span is the onset and the attribute being labelled is mostly
-                    // in the silence after it. Sampling the span's middle is a mistake
-                    // this project has now made four separate times.
+                    // Where this phoneme actually *is*, rather than where CTC spiked.
+                    //
+                    // A spike marks recognition, not extent, and the blank frames after it
+                    // belong acoustically to one of the two neighbouring sounds — which
+                    // one is not recoverable from spike positions, but it is recoverable
+                    // from the posteriors, which say at every frame how much each symbol
+                    // is present. So each frame between two spikes is given to whichever
+                    // of the two neighbours the model favours there, and the phoneme's
+                    // segment is the run it wins.
+                    //
+                    // Taking the whole gap instead put the following vowel inside every
+                    // consonant's segment, so frames from both classes sampled the same
+                    // material and a linear classifier scored 0.535 on data it had
+                    // memorised.
                     let next = spans.first { $0.index > span.index }
                     let from = span.frames.lowerBound
-                    let to = next?.frames.lowerBound ?? span.frames.upperBound
-                    guard to > from else { continue }
-                    let middle = (from + to) / 2
+                    let limit = next?.frames.lowerBound ?? span.frames.upperBound
+                    guard limit > from else { continue }
+                    let mine = Int(entry.symbols[span.index])
+                    let theirs = next.map { Int(entry.symbols[$0.index]) }
+                    var end = from + 1
+                    while end < limit {
+                        guard end < phonemes.count, mine < phonemes[end].count else { break }
+                        let ours = phonemes[end][mine]
+                        let other = theirs.flatMap { $0 < phonemes[end].count ? phonemes[end][$0] : nil } ?? 0
+                        if other > ours { break }
+                        end += 1
+                    }
+                    let middle = (from + end) / 2
                     // Alignment frames are 40 ms; log-mel rows are 10 ms.
                     let row = middle * 4
                     guard row >= 0, row < rows.count else { continue }
