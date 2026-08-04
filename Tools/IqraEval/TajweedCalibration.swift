@@ -121,6 +121,11 @@ enum TajweedCalibration {
             return
         }
 
+        if let _ = arguments.trainingOutput {
+            try await exportTrainingFrames(arguments, reciter: reciter, model: analyzer, store: store)
+            return
+        }
+
         if arguments.nasalityTest {
             try await measureNasality(arguments, reciter: reciter, model: analyzer, store: store)
             return
@@ -468,6 +473,110 @@ enum TajweedCalibration {
         samples.append(contentsOf: compressed)
         samples.append(contentsOf: chunk.samples[upper...])
         return AudioChunk(samples: samples, startTime: chunk.startTime)
+    }
+
+    // MARK: - Training data
+
+    /// Write out labelled audio frames: what a ṣifah sounds like, and what it does not.
+    ///
+    /// This is the raw material the model-based checks never had. Muaalem's ṣifah heads
+    /// were trained to transcribe attribute *sequences*, on recitation that is correct
+    /// throughout, so they learned to predict an attribute from the letters around it —
+    /// which is why removing a ghunnah's sound entirely moved their verdict 2.7% of the
+    /// time. A classifier shown one frame at a time cannot do that. It has no context to
+    /// predict from, so it either hears the attribute or it does not.
+    ///
+    /// The labels cost nothing. Forced alignment says which frames are the nūn and which
+    /// are the vowel beside it; the phonetiser says the nūn must be nasalised and the
+    /// vowel must not. Every āyah of every reciter is thousands of labelled frames, and
+    /// none of it needed anyone to mark up a recording.
+    ///
+    /// Held-out reciters are the point of the `--reciter` flag here: a classifier that
+    /// separates one voice's nasals from its vowels has learned that voice, not
+    /// nasality.
+    static func exportTrainingFrames(
+        _ arguments: Arguments,
+        reciter: Reciter,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin")
+        }
+        guard let frontendURL = MuaalemFeatures.locate() else {
+            throw IqraEval.EvalError.missing("muaalem-frontend.bin")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let features = try MuaalemFeatures(resourceURL: frontendURL)
+        let library = ReciterAudioLibrary()
+        let aligner = CTCForcedAligner(blank: 0)
+        let sifa = arguments.trainingSifa
+
+        let output = URL(fileURLWithPath: arguments.trainingOutput ?? "frames.csv")
+        FileManager.default.createFile(atPath: output.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+
+        print("Training frames for \(sifa)")
+        print("  reciter  \(reciter.name)")
+        print("  writing  \(output.lastPathComponent)")
+
+        var written = 0
+        var byClass: [Int: Int] = [:]
+
+        for surah in arguments.surahs {
+            let surahTarget = try await store.target(surah: surah)
+            for verse in surahTarget.verses.prefix(arguments.limitPerSurah) {
+                guard let entry = script[verse.reference],
+                      let url = try? await library.fetch(verse.reference, reciter: reciter),
+                      let audio = try? AudioFileLoader.load(url: url),
+                      let observed = try? await model.probabilities(for: audio),
+                      let phonemes = observed.probabilities["phonemes"],
+                      let spans = try? aligner.align(
+                          probabilities: phonemes,
+                          target: entry.symbols.map(Int.init)
+                      )
+                else { continue }
+
+                let plane = entry.plane(sifa)
+                guard !plane.isEmpty else { continue }
+                // Raw log-mel, *not* the normalised stacked rows the model consumes.
+                // Normalising each mel bin across the utterance divides out the very
+                // level differences a ṣifah is made of.
+                let rows = features.logMel(audio.samples)
+                guard !rows.isEmpty else { continue }
+
+                for span in spans where span.index < plane.count {
+                    let label = Int(plane[span.index])
+                    guard label > 0, span.confidence >= 0.5 else { continue }
+                    // The *sustained* part of the sound, which lives between this spike
+                    // and the next — not inside the spike. CTC marks events, not extents,
+                    // so the span is the onset and the attribute being labelled is mostly
+                    // in the silence after it. Sampling the span's middle is a mistake
+                    // this project has now made four separate times.
+                    let next = spans.first { $0.index > span.index }
+                    let from = span.frames.lowerBound
+                    let to = next?.frames.lowerBound ?? span.frames.upperBound
+                    guard to > from else { continue }
+                    let middle = (from + to) / 2
+                    // Alignment frames are 40 ms; log-mel rows are 10 ms.
+                    let row = middle * 4
+                    guard row >= 0, row < rows.count else { continue }
+
+                    var line = "\(label)"
+                    for value in rows[row] { line += ",\(String(format: "%.4f", value))" }
+                    line += "\n"
+                    handle.write(Data(line.utf8))
+                    written += 1
+                    byClass[label, default: 0] += 1
+                }
+            }
+        }
+
+        print("  \(written) frames")
+        for (label, count) in byClass.sorted(by: { $0.key < $1.key }) {
+            print("    class \(label): \(count)")
+        }
     }
 
     // MARK: - Nasality, measured from the signal

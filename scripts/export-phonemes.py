@@ -21,8 +21,8 @@ Output: Resources/quran-phonemes.bin
       uint16 surah, uint16 ayah, uint16 words, uint16 phonemes
       uint8  symbol[phonemes]    class index into the model's phoneme head
       uint8  word[phonemes]      which word of the āyah this phoneme belongs to
-      uint8  ghonna[phonemes]    0 unknown, 1 must be nasalised, 2 must not
-      uint8  qalqala[phonemes]   0 unknown, 1 must be echoed, 2 must not
+      uint8  sifa[10][phonemes]  one plane per ṣifah, in SIFAT order below;
+                                 0 unknown, otherwise the 1-based class
 
 Usage:
     .venv/bin/python scripts/export-phonemes.py
@@ -85,11 +85,22 @@ def main() -> int:
         madd_aared_len=4,
     )
 
-    # The library's own names for the two attributes the model can actually judge.
-    GHONNA_PRESENT = {"maghnoon"}
-    GHONNA_ABSENT = {"not_maghnoon"}
-    QALQALA_PRESENT = {"moqalqal"}
-    QALQALA_ABSENT = {"not_moqalqal"}
+    # Every ṣifah the phonetiser labels, and the classes each can take. Exported in
+    # full rather than the two the app happens to use today: forced alignment turns each
+    # of these into labelled audio for free, which is the raw material for training a
+    # detector that hears a ṣifah rather than predicting it from context.
+    SIFAT = [
+        ("ghonna", ["maghnoon", "not_maghnoon"]),
+        ("hams_or_jahr", ["hams", "jahr"]),
+        ("shidda_or_rakhawa", ["shadeed", "between", "rikhw"]),
+        ("tafkheem_or_taqeeq", ["mofakham", "moraqaq", "least_tafkheem"]),
+        ("itbaq", ["monfateh", "motbaq"]),
+        ("qalqla", ["moqalqal", "not_moqalqal"]),
+        ("safeer", ["safeer", "no_safeer"]),
+        ("istitala", ["mostateel", "not_mostateel"]),
+        ("tafashie", ["motafashie", "not_motafashie"]),
+        ("tikraar", ["mokarar", "not_mokarar"]),
+    ]
 
     records = []
     skipped = []
@@ -106,7 +117,8 @@ def main() -> int:
                 skipped.append((surah, ayah, str(error)[:60]))
                 continue
 
-            symbols, words, ghonna, qalqala = [], [], [], []
+            symbols, words = [], []
+            planes = {name: [] for name, _ in SIFAT}
             word_index = 0
             # `sifat` is one entry per phoneme *group*, and each group carries the
             # characters it covers, so the two are walked together.
@@ -124,15 +136,14 @@ def main() -> int:
                 words.append(min(word_index, 255))
 
                 group = sifat[group_index] if group_index < len(sifat) else None
-                value = getattr(group, "ghonna", None) if group else None
-                ghonna.append(1 if value in GHONNA_PRESENT else 2 if value in GHONNA_ABSENT else 0)
-                value = getattr(group, "qalqla", None) if group else None
-                qalqala.append(1 if value in QALQALA_PRESENT else 2 if value in QALQALA_ABSENT else 0)
+                for name, classes in SIFAT:
+                    value = getattr(group, name, None) if group else None
+                    planes[name].append(classes.index(value) + 1 if value in classes else 0)
                 group_index += 1
 
             if not symbols:
                 continue
-            records.append((surah, ayah, word_index + 1, symbols, words, ghonna, qalqala))
+            records.append((surah, ayah, word_index + 1, symbols, words, planes))
 
         if surah % 20 == 0:
             print(f"    …{surah}/114 surahs, {len(records)} āyāt")
@@ -141,19 +152,20 @@ def main() -> int:
     with OUTPUT.open("wb") as handle:
         handle.write(b"QPH1")
         handle.write(struct.pack("<ii", 1, len(records)))
-        for surah, ayah, words, symbols, wordOf, ghonna, qalqala in records:
+        for surah, ayah, words, symbols, wordOf, planes in records:
             handle.write(struct.pack("<HHHH", surah, ayah, words, len(symbols)))
             handle.write(bytes(symbols))
             handle.write(bytes(wordOf))
-            handle.write(bytes(ghonna))
-            handle.write(bytes(qalqala))
+            for name, _ in SIFAT:
+                handle.write(bytes(planes[name]))
 
     total = sum(len(r[3]) for r in records)
-    nasal = sum(sum(1 for g in r[5] if g == 1) for r in records)
-    echoed = sum(sum(1 for q in r[6] if q == 1) for r in records)
+    nasal = sum(sum(1 for g in r[5]["ghonna"] if g == 1) for r in records)
+    echoed = sum(sum(1 for q in r[5]["qalqla"] if q == 1) for r in records)
     size = OUTPUT.stat().st_size
     print(f"==> {len(records)} āyāt, {total} phonemes, {size / 1e6:.1f} MB")
     print(f"    {nasal} phonemes must be nasalised, {echoed} must be echoed")
+    print(f"    {len(SIFAT)} ṣifāt exported per phoneme")
     if skipped:
         print(f"==> {len(skipped)} āyāt skipped; first few:")
         for entry in skipped[:5]:

@@ -993,6 +993,9 @@ struct Arguments {
     var referenceMadd = false
     /// Measure nasalisation from the signal rather than from the model.
     var nasalityTest = false
+    /// Where to write labelled training frames, and for which ṣifah.
+    var trainingOutput: String?
+    var trainingSifa: PhonemeScript.Sifa = .ghonna
     var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
@@ -1053,6 +1056,10 @@ struct Arguments {
             case "--goodness": goodnessTest = true
             case "--reference-madd": referenceMadd = true
             case "--nasality": nasalityTest = true
+            case "--training-frames": trainingOutput = next()
+            case "--sifa":
+                let name = next() ?? ""
+                trainingSifa = PhonemeScript.Sifa.allCases.first { "\($0)" == name } ?? .ghonna
             case "--reference-shortfall": referenceShortfall = next().flatMap { Double($0) } ?? referenceShortfall
             case "--pronunciation-scoring": usePronunciationScoring = true
             case "--phonemes": forcedAlignPhonemes = next()

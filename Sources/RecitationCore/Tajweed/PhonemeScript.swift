@@ -11,17 +11,52 @@ import Foundation
 /// symbols a word carries, so this file describes Ḥafṣ ʿan ʿĀṣim and nothing else.
 public struct PhonemeScript: Sendable {
 
+    /// The ṣifāt the phonetiser labels, in the order the exported planes appear.
+    ///
+    /// The order is the file format and must match `scripts/export-phonemes.py`. It is
+    /// not alphabetical and not the model's head order — it is simply the order chosen at
+    /// export, so changing either side without the other silently reads one attribute as
+    /// another.
+    public enum Sifa: Int, Sendable, CaseIterable {
+        case ghonna = 0
+        case hamsOrJahr
+        case shiddaOrRakhawa
+        case tafkhimOrTarqiq
+        case itbaq
+        case qalqala
+        case safeer
+        case istitala
+        case tafashie
+        case tikraar
+    }
+
     /// One āyah's phonemes, one entry per element.
     public struct Entry: Sendable {
         /// Class index into the model's phoneme head.
         public let symbols: [UInt8]
         /// Which word of the āyah each phoneme belongs to, 0-based.
         public let wordOfPhoneme: [UInt8]
-        /// 1 must be nasalised, 2 must not, 0 no expectation.
-        public let ghonna: [UInt8]
-        /// 1 must be echoed, 2 must not, 0 no expectation.
-        public let qalqala: [UInt8]
+        /// Every ṣifah the text requires of each phoneme, one plane each, in the order
+        /// `Sifa.allCases`. 0 means the phonetiser had no expectation; otherwise the
+        /// 1-based class within that ṣifah.
+        ///
+        /// All ten are carried rather than the two the app judges today. Forced alignment
+        /// turns each of them into labelled audio at no cost — every ṣifah of every
+        /// phoneme of every āyah, in recitation known to be correct — which is the raw
+        /// material for training a detector that *hears* an attribute instead of
+        /// predicting it from the letters around it.
+        public let sifat: [[UInt8]]
         public let wordCount: Int
+
+        /// 1 must be nasalised, 2 must not, 0 no expectation.
+        public var ghonna: [UInt8] { plane(.ghonna) }
+        /// 1 must be echoed, 2 must not, 0 no expectation.
+        public var qalqala: [UInt8] { plane(.qalqala) }
+
+        public func plane(_ sifa: Sifa) -> [UInt8] {
+            let index = sifa.rawValue
+            return index < sifat.count ? sifat[index] : []
+        }
 
         /// Phoneme positions belonging to a given word.
         public func range(ofWord index: Int) -> Range<Int>? {
@@ -73,11 +108,15 @@ public struct PhonemeScript: Sendable {
             let ayah = try uint16()
             let words = try uint16()
             let phonemes = try uint16()
+            let symbols = try bytes(phonemes)
+            let wordOf = try bytes(phonemes)
+            var planes: [[UInt8]] = []
+            planes.reserveCapacity(Sifa.allCases.count)
+            for _ in Sifa.allCases { planes.append(try bytes(phonemes)) }
             let entry = Entry(
-                symbols: try bytes(phonemes),
-                wordOfPhoneme: try bytes(phonemes),
-                ghonna: try bytes(phonemes),
-                qalqala: try bytes(phonemes),
+                symbols: symbols,
+                wordOfPhoneme: wordOf,
+                sifat: planes,
                 wordCount: words
             )
             loaded[VerseReference(surah: surah, ayah: ayah)] = entry

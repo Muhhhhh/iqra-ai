@@ -111,6 +111,18 @@ public struct MuaalemFeatures: Sendable {
         return stack(normalised)
     }
 
+    /// Log-mel frames before normalisation, `[frames][80]`, one per 10 ms.
+    ///
+    /// Public because the normalised, stacked form the model consumes is the wrong input
+    /// for anything that has to compare one sound's *level* against another's:
+    /// `normalisePerBin` gives every mel bin zero mean and unit variance across the
+    /// utterance, which is exactly the information a nasal murmur consists of. A
+    /// classifier handed the normalised rows is being asked to hear a difference that has
+    /// been divided out.
+    public func logMel(_ samples: [Float]) -> [[Float]] {
+        melSpectrogram(samples)
+    }
+
     /// Log-mel frames, `[frames][80]`.
     func melSpectrogram(_ samples: [Float]) -> [[Float]] {
         guard samples.count >= Self.frameLength else { return [] }
