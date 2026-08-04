@@ -149,6 +149,27 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// Set from that session's observed failures rather than from a sweep, so it is a
         /// bound on nonsense and not a tuned threshold.
         public var implausibleRatio: ClosedRange<Double>
+        /// How long a stretch may run before it is re-aligned in pieces.
+        ///
+        /// **Infinite, meaning never, because chunking was measured and it does not work.**
+        ///
+        /// The reasoning for it was sound: the app closes a segment at 20 s, every
+        /// threshold here was fitted on single āyāt of a few seconds, and one Viterbi path
+        /// does not hold together over twenty seconds. Cutting the segment into four-second
+        /// pieces should have put each one back inside the regime the numbers describe.
+        ///
+        /// Replayed against a real recorded session it made things slightly worse —
+        /// impossible measurements 11 → 14, worst ratio 17.3× → 25.3×. The reason is
+        /// circular and obvious afterwards: the cut points are chosen from the confident
+        /// spikes of the *coarse* alignment, so when that has already drifted the cuts land
+        /// in the wrong places and each piece is aligned against phonemes it does not
+        /// contain. A drifting alignment cannot be asked where it is safe to cut.
+        ///
+        /// Kept because the measurement is worth repeating against a better cut rule —
+        /// silence, or word timings from the matcher, would not depend on the alignment
+        /// being right in the first place. `implausibleRatio` is what actually holds the
+        /// line today.
+        public var chunkSeconds: Double
         /// Mean alignment confidence a *word* needs before its elongations are judged.
         ///
         /// Forced alignment returns a path whatever it is given, so this asks whether the
@@ -180,6 +201,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             judgesGhunnahHold: Bool = false,
             qalqalaShortfall: Double = 0.7,
             implausibleRatio: ClosedRange<Double> = 0.35...3.5,
+            chunkSeconds: Double = .infinity,
             wordSupport: Double = 0.5,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
@@ -192,6 +214,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.judgesGhunnahHold = judgesGhunnahHold
             self.qalqalaShortfall = qalqalaShortfall
             self.implausibleRatio = implausibleRatio
+            self.chunkSeconds = chunkSeconds
             self.wordSupport = wordSupport
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
@@ -322,8 +345,16 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
             guard let observed = try? await model.probabilities(for: segment.audio),
                   let phonemes = observed.probabilities["phonemes"],
-                  let spans = try? aligner.align(probabilities: phonemes, target: symbols)
+                  let coarse = try? aligner.align(probabilities: phonemes, target: symbols)
             else { continue }
+
+            // Long segments are re-aligned in pieces before anything is measured off them.
+            let spans = await refined(
+                spans: coarse,
+                symbols: symbols,
+                audio: segment.audio,
+                observed: observed
+            )
 
             // A second gate, on the audio rather than the transcript: the words whose
             // expected sounds the alignment actually found. Deliberately measured per
@@ -675,6 +706,84 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         ghunnahHolds.append(contentsOf: measured.map(\.seconds))
         if ghunnahHolds.count > 120 { ghunnahHolds.removeFirst(ghunnahHolds.count - 120) }
         return notes
+    }
+
+    /// Re-align a long segment in short pieces, using the first pass only to decide where
+    /// to cut.
+    ///
+    /// One Viterbi path over twenty seconds does not hold together. The first session
+    /// recorded through the app showed what that looks like from the reciter's side: a
+    /// fatḥa reported at 3.44 s, twenty-one times its expected length, with the audio at
+    /// full level throughout — the neighbouring consonants had been placed several words
+    /// apart and the gap between them was measuring other speech.
+    ///
+    /// It went unseen for so long because studio recitation never provokes it. A qārī does
+    /// not pause mid-phrase, so segments never reach the length cap, and the calibration
+    /// harness feeds one āyah at a time besides. Every threshold in this file was fitted
+    /// inside a regime the app then left.
+    ///
+    /// So the long path is used only to find safe places to cut — confident spikes, spaced
+    /// a few seconds apart — and each piece is aligned on its own against only the
+    /// phonemes it contains. Every piece is then short enough to be in the regime where
+    /// these numbers were measured, and the frames come back on the original timeline.
+    private func refined(
+        spans: [CTCForcedAligner.Span],
+        symbols: [Int],
+        audio: AudioChunk,
+        observed: MuaalemTajweedAnalyzer.Observation
+    ) async -> [CTCForcedAligner.Span] {
+        guard audio.duration > options.chunkSeconds * 1.5, !spans.isEmpty else { return spans }
+        let rate = AudioChunk.canonicalSampleRate
+        let frame = observed.frameDuration
+
+        var cuts: [Int] = [0]
+        var lastTime = 0.0
+        for span in spans {
+            let time = Double(span.frames.lowerBound) * frame
+            if time - lastTime >= options.chunkSeconds, span.confidence > 0.6 {
+                cuts.append(span.index)
+                lastTime = time
+            }
+        }
+        cuts.append(symbols.count)
+        guard cuts.count > 2 else { return spans }
+
+        var rebuilt: [CTCForcedAligner.Span] = []
+        for pair in zip(cuts, cuts.dropFirst()) where pair.1 > pair.0 {
+            let piece = Array(symbols[pair.0..<pair.1])
+            guard let first = spans.first(where: { $0.index >= pair.0 }),
+                  let last = spans.last(where: { $0.index < pair.1 })
+            else { continue }
+            // A little air either side, so a boundary phoneme is not clipped.
+            let startTime = max(0, Double(first.frames.lowerBound) * frame - 0.15)
+            let endTime = min(audio.duration, Double(last.frames.upperBound) * frame + 0.25)
+            let from = Int(startTime * rate), to = Int(endTime * rate)
+            guard to > from, to <= audio.samples.count else { continue }
+
+            let slice = AudioChunk(samples: Array(audio.samples[from..<to]), startTime: 0)
+            guard let local = try? await model.probabilities(for: slice),
+                  let phonemes = local.probabilities["phonemes"],
+                  let aligned = try? aligner.align(probabilities: phonemes, target: piece)
+            else {
+                // Keep the coarse placement for this stretch rather than dropping it —
+                // a missing span is judged as an absent sound elsewhere in this file.
+                rebuilt.append(contentsOf: spans.filter { $0.index >= pair.0 && $0.index < pair.1 })
+                continue
+            }
+
+            let offset = Int(startTime / frame)
+            for span in aligned {
+                rebuilt.append(
+                    CTCForcedAligner.Span(
+                        index: pair.0 + span.index,
+                        symbol: span.symbol,
+                        frames: (offset + span.frames.lowerBound)..<(offset + span.frames.upperBound),
+                        confidence: span.confidence
+                    )
+                )
+            }
+        }
+        return rebuilt.isEmpty ? spans : rebuilt.sorted { $0.index < $1.index }
     }
 
     /// Phonemes the text marks for qalqalah, each its own bounce.

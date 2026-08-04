@@ -160,6 +160,11 @@ enum TajweedCalibration {
             return
         }
 
+        if arguments.replayPath != nil {
+            try await replaySession(arguments, model: analyzer, store: store)
+            return
+        }
+
         if arguments.alignedTajweed {
             try await measureAligned(arguments, reciter: reciter, model: analyzer, store: store)
             return
@@ -1966,5 +1971,150 @@ enum TajweedCalibration {
 
     static func pad(_ value: Int, _ width: Int) -> String {
         "\(value)".padding(toLength: width, withPad: " ", startingAt: 0)
+    }
+}
+
+extension TajweedCalibration {
+
+    /// Run a session recorded by the app back through the analyzer.
+    ///
+    /// Recordings are useless without this. `SessionRecorder` keeps what the microphone
+    /// heard and what the app concluded, but the point of keeping them is to change the
+    /// analyzer and ask what it *would* have said — which needs the audio fed back in, not
+    /// the old verdicts re-read.
+    ///
+    /// It reports the thing a non-expert reciter can still supply ground truth for: not
+    /// whether the recitation was correct, which needs a qārī, but whether the measurement
+    /// was *possible*. A fatḥa timed at 3.44 s is wrong however well it was recited, and
+    /// counting those is a labelless test of alignment quality.
+    static func replaySession(
+        _ arguments: Arguments,
+        model: MuaalemTajweedAnalyzer,
+        store: SQLiteVerseStore
+    ) async throws {
+        guard let folder = arguments.replayPath else {
+            throw IqraEval.EvalError.missing("--replay needs a session folder")
+        }
+        guard let scriptURL = PhonemeScript.locate() else {
+            throw IqraEval.EvalError.missing("quran-phonemes.bin")
+        }
+        let script = try PhonemeScript(contentsOf: scriptURL)
+        let directory = URL(fileURLWithPath: folder)
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )
+        let logs = contents.filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }
+        guard !logs.isEmpty else { throw IqraEval.EvalError.missing("no session logs in \(folder)") }
+
+        print("Replaying recorded sessions")
+        print("  folder   \(directory.lastPathComponent)")
+        print("  sessions \(logs.count)")
+
+        for logURL in logs {
+            let log = try SessionRecorder.decoder()
+                .decode(SessionRecorder.Log.self, from: Data(contentsOf: logURL))
+            let audioURL = directory.appending(path: log.audioFile)
+            guard let audio = try? AudioFileLoader.load(url: audioURL) else {
+                print("\n  \(logURL.lastPathComponent): audio missing")
+                continue
+            }
+
+            // The āyāt the reciter was working through, rebuilt from the log.
+            let references = log.words
+                .map { VerseReference(surah: $0.surah, ayah: $0.ayah) }
+                .reduce(into: [VerseReference]()) { list, reference in
+                    if list.last != reference { list.append(reference) }
+                }
+            var verses: [Verse] = []
+            for reference in references {
+                let surah = try await store.target(surah: reference.surah)
+                if let verse = surah.verses.first(where: { $0.reference == reference }) {
+                    verses.append(verse)
+                }
+            }
+            guard !verses.isEmpty else { continue }
+            let target = RecitationTarget(verses: verses)
+
+            // Analysed twice, differing only in whether long segments are re-aligned in
+            // pieces. Comparing the replay against the log would confound the fix with
+            // whatever settings happened to be on when the session was recorded; this
+            // isolates it. Over-length flagging is on for both, because that is the check
+            // the drift was loudest in.
+            func analyse(chunked: Bool) -> AlignedTajweedAnalyzer {
+                AlignedTajweedAnalyzer(
+                    model: model,
+                    script: script,
+                    options: .init(
+                        flagsOverlongVowels: true,
+                        // The plausibility guard is deliberately opened right up. It sits
+                        // *before* a measurement becomes a note, so leaving it in place
+                        // would mean counting how well the guard suppresses drift rather
+                        // than how much drift the alignment produces — and the first run
+                        // of this comparison reported a flat 0 → 0 for exactly that
+                        // reason. What is wanted here is the raw measurement.
+                        implausibleRatio: 0.0001...1e9,
+                        chunkSeconds: chunked ? 4 : 1e9
+                    )
+                )
+            }
+            // The segment boundaries the app actually used, so the replay meets the same
+            // alignment problem the reciter did rather than an easier one.
+            var segments: [AlignedAudioSegment] = []
+            let rate = AudioChunk.canonicalSampleRate
+            for piece in log.segments {
+                let from = Int(piece.start * rate), to = Int(piece.end * rate)
+                guard from >= 0, to <= audio.samples.count, to > from else { continue }
+                let chunk = AudioChunk(
+                    samples: Array(audio.samples[from..<to]),
+                    startTime: piece.start
+                )
+                let words = log.words.filter {
+                    guard let start = $0.start, let end = $0.end else { return false }
+                    return start < piece.end && end > piece.start
+                }
+                segments.append(
+                    AlignedAudioSegment(
+                        audio: chunk,
+                        transcription: .empty,
+                        words: words.map {
+                            WordEvaluation(
+                                targetIndex: $0.index,
+                                reference: VerseReference(surah: $0.surah, ayah: $0.ayah),
+                                expectedText: $0.text,
+                                status: .correct,
+                                timeRange: ($0.start ?? 0)...($0.end ?? 0),
+                                recognizerConfidence: $0.confidence ?? 1
+                            )
+                        }
+                    )
+                )
+            }
+
+            let whole = await analyse(chunked: false).analyze(segments: segments, target: target)
+            let pieces = await analyse(chunked: true).analyze(segments: segments, target: target)
+            let lengths = log.segments.map { $0.end - $0.start }
+
+            func ratios(_ notes: [TajweedNote]) -> [Double] {
+                notes.compactMap { $0.measurement.map { $0.observed / max($0.expected, 0.0001) } }
+            }
+            func wild(_ notes: [TajweedNote]) -> Int {
+                ratios(notes).count { $0 < 0.35 || $0 > 3.5 }
+            }
+
+            print("\n  \(logURL.deletingPathExtension().lastPathComponent)")
+            print("    \(format(log.duration, 1))s, \(segments.count) segments, "
+                  + "longest \(format(lengths.max() ?? 0, 1))s")
+            print("    logged at the time              \(log.notes.count) notes")
+            print("    one alignment per segment       \(whole.count) notes, "
+                  + "worst ratio \(format(ratios(whole).map { max($0, 1 / $0) }.max() ?? 1, 1))×")
+            print("    re-aligned in 4s pieces         \(pieces.count) notes, "
+                  + "worst ratio \(format(ratios(pieces).map { max($0, 1 / $0) }.max() ?? 1, 1))×")
+            print("    with the guard opened right up, so the alignment is what is measured:")
+            print("      impossible measurements       \(wild(whole)) → \(wild(pieces))")
+            print("      notes                         \(whole.count) → \(pieces.count)")
+        }
+        print("")
+        print("  A ratio far from 1 is the measurement failing, not the reciter — nobody")
+        print("  holds a vowel twenty times its length. Counting those needs no qārī.")
     }
 }
