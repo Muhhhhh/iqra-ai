@@ -594,13 +594,19 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         // below: the text-side detector groups its occurrences the same way, so the nth
         // four-count madd of a word can be matched to the nth set of characters carrying
         // one.
+        // Short vowels are numbered apart from elongations, because they are not the same
+        // thing and `madd()` cannot separate them — it answers .maddAsli for a one-count
+        // vowel and a two-count natural madd alike. Counting them together produced "the
+        // sixth of six in this word" on عِلْمٍۢ, which holds no six of anything: five of the
+        // six were its harakāt.
         var ordinal: [Int: (index: Int, of: Int)] = [:]
         var byWordAndRule: [String: [Int]] = [:]
         for (position, entry) in measured.enumerated() {
             guard owner.indices.contains(entry.range.lowerBound) else { continue }
             let word = owner[entry.range.lowerBound].word.globalIndex
             let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
-            byWordAndRule["\(word):\(rule.rawValue)", default: []].append(position)
+            let kind = entry.harakat >= 2 ? "madd" : "vowel"
+            byWordAndRule["\(word):\(rule.rawValue):\(kind)", default: []].append(position)
         }
         for (_, positions) in byWordAndRule {
             let ordered = positions.sorted { measured[$0].range.lowerBound < measured[$1].range.lowerBound }
@@ -653,6 +659,9 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 let start = Double(entry.startFrame) * 0.04
                 let which = ordinal[position]
                 let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
+                // Nothing to disambiguate when the word holds only one of its kind, and
+                // "(the first of 1 in this word)" is worse than saying nothing.
+                let named = (which?.of ?? 1) > 1 ? which : nil
 
                 // The letters, but only when the two rule engines agree on how many of
                 // this rule the word holds. They are independent — a hand-written detector
@@ -666,9 +675,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                     else { return nil }
                     return candidates[which.index - 1].range
                 }()
-                let where_ = which.map {
+                let noun = entry.harakat >= 2 ? "elongations" : "short vowels"
+                let where_ = named.map {
                     " (the \(Self.ordinals[$0.index] ?? "\($0.index)th") of "
-                        + "\(Self.cardinals[$0.of] ?? "\($0.of)") in this word)"
+                        + "\(Self.cardinals[$0.of] ?? "\($0.of)") \(noun) in this word)"
                 } ?? ""
                 notes.append(
                     TajweedNote(
@@ -684,7 +694,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                             : "This elongation\(where_) sounds short — it should run about \(entry.harakat) harakāt.",
                         measurement: .init(observed: entry.seconds, expected: expected, unit: "s"),
                         letters: letters,
-                        occurrence: which
+                        occurrence: named
                     )
                 )
             }

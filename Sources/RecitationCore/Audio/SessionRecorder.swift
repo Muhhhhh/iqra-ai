@@ -173,7 +173,16 @@ public actor SessionRecorder {
 
         // A recording of nothing helps no one, and leaving it behind makes the folder
         // harder to read than it is useful.
-        guard samplesWritten > Int(AudioChunk.canonicalSampleRate) else {
+        //
+        // A page turn closes the file, so a reciter moving through pages leaves a short
+        // fragment at each boundary — six of the thirteen sessions recorded so far were
+        // two-second scraps with not one word matched to audio. A recording nothing
+        // aligned to says nothing about anyone's recitation. Length alone is too weak a
+        // test for those, since they clear a second easily.
+        let aligned = words.contains { $0.timeRange != nil }
+        guard samplesWritten > Int(AudioChunk.canonicalSampleRate),
+              aligned || samplesWritten > Int(AudioChunk.canonicalSampleRate * 10)
+        else {
             try? FileManager.default.removeItem(at: audioURL)
             return nil
         }

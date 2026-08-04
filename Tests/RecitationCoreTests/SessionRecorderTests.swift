@@ -5,6 +5,18 @@ import Testing
 @Suite("Session recording")
 struct SessionRecorderTests {
 
+    /// A word the matcher placed in the audio — what makes a recording worth keeping.
+    private func recited() -> [WordEvaluation] {
+        [WordEvaluation(
+            targetIndex: 0,
+            reference: VerseReference(surah: 1, ayah: 1),
+            expectedText: "بِسْمِ",
+            status: .correct,
+            timeRange: 0...0.5,
+            recognizerConfidence: 1
+        )]
+    }
+
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appending(path: "iqra-recorder-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -41,7 +53,7 @@ struct SessionRecorderTests {
             let samples = (0..<16_000).map { sin(Float($0) * 0.05) * 0.5 }
             await recorder.append(AudioChunk(samples: samples, startTime: Double(index)))
         }
-        let folder = await recorder.finish(words: [], notes: [])
+        let folder = await recorder.finish(words: recited(), notes: [])
         #expect(folder != nil)
 
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -85,12 +97,50 @@ struct SessionRecorderTests {
         await recorder.append(
             AudioChunk(samples: [Float](repeating: 1.5, count: 20_000), startTime: 0)
         )
-        _ = await recorder.finish(words: [], notes: [])
+        _ = await recorder.finish(words: recited(), notes: [])
 
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         let audio = try #require(files.first { $0.pathExtension == "wav" })
         let written = try Data(contentsOf: audio).dropFirst(44)
         let values = written.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
         #expect(values.allSatisfy { $0 > 32_000 })
+    }
+}
+
+extension SessionRecorderTests {
+
+    @Test("A page-turn fragment with nothing aligned is not kept")
+    func discardsUnalignedFragment() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = SessionRecorder(directory: directory)
+
+        // Two seconds of sound, but the matcher placed no word in it — which is what a
+        // page turn leaves behind, and what filled six of the first thirteen sessions.
+        await recorder.begin()
+        let samples = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 }
+        await recorder.append(AudioChunk(samples: samples, startTime: 0))
+        let folder = await recorder.finish(words: [], notes: [])
+
+        #expect(folder == nil)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        #expect(files.filter { $0.pathExtension == "wav" }.isEmpty)
+    }
+
+    @Test("A long recording is kept even when nothing aligned")
+    func keepsLongUnaligned() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = SessionRecorder(directory: directory)
+
+        // Recitation the matcher failed on is still recitation, and is exactly the case
+        // worth listening to.
+        await recorder.begin()
+        for _ in 0..<12 {
+            let samples = (0..<16_000).map { sin(Float($0) * 0.05) * 0.5 }
+            await recorder.append(AudioChunk(samples: samples, startTime: 0))
+        }
+        let folder = await recorder.finish(words: [], notes: [])
+        #expect(folder != nil)
     }
 }
