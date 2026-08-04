@@ -129,6 +129,26 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// before those, the same threshold caught 1 of 13 for 12 false flags. Qalqalah
         /// kubrā at a pause is a heavier bounce by rule, and a ب is not a ق.
         public var qalqalaShortfall: Double
+        /// Beyond this ratio to what was expected, a duration is treated as an alignment
+        /// failure rather than a recitation error, and nothing is said.
+        ///
+        /// The first real session recorded through the app made the case for it. Sūrat
+        /// al-Kahf, 11 āyāt, and the check reported a short vowel held for 3.44 s — 21×
+        /// its expected length — with the audio in that stretch at full level throughout.
+        /// Nobody holds a fatḥa for three and a half seconds. Forced alignment had put the
+        /// neighbouring consonants several words apart, and the gap between them was
+        /// measuring other speech.
+        ///
+        /// The cause is that the app segments to 20 s while every threshold here was
+        /// fitted on single āyāt of a few seconds, and this file already records that
+        /// alignment decays over long passages. Chunked re-alignment exists for that
+        /// (`IqraEval --refine`) and has never been brought into the app. Until it is,
+        /// this is the floor under the damage: a measurement that absurd is not evidence
+        /// about someone's recitation, and the honest response to it is silence.
+        ///
+        /// Set from that session's observed failures rather than from a sweep, so it is a
+        /// bound on nonsense and not a tuned threshold.
+        public var implausibleRatio: ClosedRange<Double>
         /// Mean alignment confidence a *word* needs before its elongations are judged.
         ///
         /// Forced alignment returns a path whatever it is given, so this asks whether the
@@ -159,6 +179,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             ghunnahShortfall: Double = 0.7,
             judgesGhunnahHold: Bool = false,
             qalqalaShortfall: Double = 0.7,
+            implausibleRatio: ClosedRange<Double> = 0.35...3.5,
             wordSupport: Double = 0.5,
             minimumBaselineMadds: Int = 3,
             judgesSifat: Bool = false
@@ -170,6 +191,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.ghunnahShortfall = ghunnahShortfall
             self.judgesGhunnahHold = judgesGhunnahHold
             self.qalqalaShortfall = qalqalaShortfall
+            self.implausibleRatio = implausibleRatio
             self.wordSupport = wordSupport
             self.minimumBaselineMadds = minimumBaselineMadds
             self.presenceThreshold = presenceThreshold
@@ -520,6 +542,12 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 // Two mistakes, opposite in direction. An elongation left short, and a
                 // vowel drawn out where the text asks for none — the second is only
                 // visible because short vowels are measured too, not just the madds.
+                // An alignment that has drifted produces ratios no recitation can: this
+                // session logged 21×. Say nothing rather than accuse someone of it.
+                guard expected > 0,
+                      options.implausibleRatio.contains(entry.seconds / expected)
+                else { continue }
+
                 let tooShort = entry.harakat > 2 && entry.seconds < expected * options.maddShortfall
                 let tooLong = options.flagsOverlongVowels
                     && entry.seconds > expected * options.maddExcess
@@ -716,6 +744,9 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             let word = owner[entry.index].word
             guard supported.contains(word.globalIndex) else { continue }
             examined += 1
+            guard expected > 0,
+                  options.implausibleRatio.contains(entry.seconds / expected)
+            else { continue }
             guard entry.seconds < expected * options.qalqalaShortfall else { continue }
             let start = Double(entry.startFrame) * 0.04
             notes.append(
