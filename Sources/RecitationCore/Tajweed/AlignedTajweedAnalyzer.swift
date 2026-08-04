@@ -247,6 +247,18 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     /// The qalqalah echo, written as its own phoneme after ب د ج ق ط.
     static let qalqalaEcho = 38
 
+    /// For naming which elongation of a word is meant. A word holding nine is rare enough
+    /// to fall back on digits.
+    static let ordinals: [Int: String] = [
+        1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
+        6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth",
+    ]
+
+    static let cardinals: [Int: String] = [
+        2: "two", 3: "three", 4: "four", 5: "five",
+        6: "six", 7: "seven", 8: "eight", 9: "nine",
+    ]
+
     private let model: MuaalemTajweedAnalyzer
     private let script: PhonemeScript
     private let options: Options
@@ -561,13 +573,28 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             measured.append((run.range, run.harakat, seconds, from, confident))
         }
 
+        // Number each elongation within its word, so a note can say which one it means.
+        // A word carrying three madds and one complaint is otherwise a riddle.
+        var ordinal: [Int: (index: Int, of: Int)] = [:]
+        var byWord: [Int: [Int]] = [:]
+        for (position, entry) in measured.enumerated() {
+            guard owner.indices.contains(entry.range.lowerBound) else { continue }
+            byWord[owner[entry.range.lowerBound].word.globalIndex, default: []].append(position)
+        }
+        for (_, positions) in byWord {
+            let ordered = positions.sorted { measured[$0].range.lowerBound < measured[$1].range.lowerBound }
+            for (offset, position) in ordered.enumerated() where ordered.count > 1 {
+                ordinal[position] = (offset + 1, ordered.count)
+            }
+        }
+
         // Judge against evidence gathered *before* this passage. Feeding the current
         // measurements in first — especially from a shortened elongation — dilutes the
         // peer median with the very duration being questioned.
         var notes: [TajweedNote] = []
         if harakaSamples.count >= options.minimumBaselineMadds {
             let baseline = harakaSamples.sorted()[harakaSamples.count / 2]
-            for entry in measured where entry.confident {
+            for (position, entry) in measured.enumerated() where entry.confident {
                 // The final vowel of a passage is skipped: stopping on a word lengthens
                 // it legitimately — madd ʿāriḍ liʾs-sukūn — and whether the reciter
                 // pauses there is their choice, not something the text states.
@@ -603,6 +630,11 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                     ? owner[entry.range.lowerBound].word : nil else { continue }
 
                 let start = Double(entry.startFrame) * 0.04
+                let which = ordinal[position]
+                let where_ = which.map {
+                    " (the \(Self.ordinals[$0.index] ?? "\($0.index)th") of "
+                        + "\(Self.cardinals[$0.of] ?? "\($0.of)") in this word)"
+                } ?? ""
                 notes.append(
                     TajweedNote(
                         rule: madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols),
@@ -612,10 +644,11 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                         confidence: .low,
                         message: tooLong
                             ? (entry.harakat <= 1
-                                ? "This sounds drawn out — the text has no elongation here."
-                                : "This sounds longer than the \(entry.harakat) harakāt the text asks for.")
-                            : "This elongation sounds short — it should run about \(entry.harakat) harakāt.",
-                        measurement: .init(observed: entry.seconds, expected: expected, unit: "s")
+                                ? "This sounds drawn out\(where_) — the text has no elongation here."
+                                : "This sounds longer than the \(entry.harakat) harakāt the text asks for\(where_).")
+                            : "This elongation\(where_) sounds short — it should run about \(entry.harakat) harakāt.",
+                        measurement: .init(observed: entry.seconds, expected: expected, unit: "s"),
+                        occurrence: which
                     )
                 )
             }

@@ -124,6 +124,13 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
     public let message: String
     /// What was measured vs. expected, for debugging and threshold calibration.
     public let measurement: Measurement?
+    /// Which occurrence within the word this is, 1-based, and how many the word holds.
+    ///
+    /// A word is not one elongation. 22.4% of the words in the muṣḥaf that carry any madd
+    /// carry more than one — 5,102 hold two natural madds alone — so naming the word
+    /// leaves the reciter to guess which of two or three sounds is being questioned.
+    /// `nil` when the word holds only one, since there is nothing to disambiguate.
+    public let occurrence: (index: Int, of: Int)?
 
     public struct Measurement: Sendable, Equatable {
         public let observed: Double
@@ -145,7 +152,8 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
         timeRange: ClosedRange<TimeInterval>,
         confidence: TajweedConfidence,
         message: String,
-        measurement: Measurement? = nil
+        measurement: Measurement? = nil,
+        occurrence: (index: Int, of: Int)? = nil
     ) {
         self.id = id
         self.rule = rule
@@ -155,6 +163,16 @@ public struct TajweedNote: Sendable, Equatable, Identifiable {
         self.confidence = confidence
         self.message = message
         self.measurement = measurement
+        self.occurrence = occurrence
+    }
+
+    public static func == (lhs: TajweedNote, rhs: TajweedNote) -> Bool {
+        lhs.id == rhs.id && lhs.rule == rhs.rule && lhs.targetIndex == rhs.targetIndex
+            && lhs.reference == rhs.reference && lhs.timeRange == rhs.timeRange
+            && lhs.confidence == rhs.confidence && lhs.message == rhs.message
+            && lhs.measurement == rhs.measurement
+            && lhs.occurrence?.index == rhs.occurrence?.index
+            && lhs.occurrence?.of == rhs.occurrence?.of
     }
 }
 
