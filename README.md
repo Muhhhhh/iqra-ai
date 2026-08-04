@@ -450,6 +450,33 @@ iqlāb are excluded from audio checking entirely: they show no spike at all in a
 occurrences a qārī recited correctly, which is a property of the model rather than of the
 recitation. Both are still detected in the text and coloured on the page.
 
+### Learning nasality from aligned frames
+
+Forced alignment labels audio for free: every ن and م in a correct recitation is nasal,
+every vowel is not. `IqraEval --training-frames --sifa ghonna --reciter X` writes those
+frames for any of the ten ṣifāt and any reciter, which is the training data every
+model-based attempt lacked. Held out on a reciter the model never heard:
+
+| | held-out AUC | caught | misflagged |
+|---|---|---|---|
+| linear, 1 reciter, 1 frame | 0.594 | — | — |
+| linear, 4 reciters, ±3 frames | 0.649 | 52.5% | 34.7% |
+| **MLP, 64 hidden** | **0.790** | **67.8%** | **25.4%** |
+
+Every earlier attempt at ghunnah sat at chance, so this is the first real signal — and it
+came from the model class, not from features or data. Two things that looked promising
+added nothing, both for the same reason: a hand-designed band ratio, and frame deltas.
+A linear model over a seven-frame mel window can already form band contrasts and frame
+differences, so neither is new information to it.
+
+Six times the data did not help either — 0.779 against 0.790, the same number either side
+of noise. The next thing to try is architecture again: convolution across the window,
+which respects that the input is a spectrogram rather than 560 unrelated numbers.
+
+0.79 is not a detector. Catching two thirds at a quarter false is not something that
+should tell a reciter their ghunnah was wrong. It is the first point from which that
+conversation is worth having.
+
 ### What the tajweed checker actually responds to
 
 `IqraEval --calibrate-tajweed --tajweed-negatives` supplies the half that was missing:
