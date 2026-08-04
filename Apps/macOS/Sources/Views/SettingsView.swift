@@ -68,6 +68,41 @@ private struct MatchingSettings: View {
             }
 
             Section {
+                Toggle("Keep my recitation on this Mac", isOn: $settings.keepsSessionAudio)
+                Text("Saves each session as a sound file, with a note of every word and rule the app questioned. Nothing is uploaded and nothing leaves this Mac — the files sit in a folder you can open, listen to, and delete.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Why it is worth turning on: every threshold in this app was set against studio recordings of qurrāʾ, who do not make the mistakes it is built to catch. A page you read normally, and a page you read with mistakes on purpose, are the only way to find out whether it questions the right things when someone ordinary recites.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                let kept = settings.savedRecordings
+                if kept.count > 0 {
+                    LabeledContent(
+                        "Kept",
+                        value: "\(kept.count) session\(kept.count == 1 ? "" : "s"), "
+                            + String(format: "%.1f MB", kept.megabytes)
+                    )
+                    if let directory = settings.recordingsDirectory {
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([directory])
+                        }
+                    }
+                }
+            } header: {
+                Text("Recordings")
+            } footer: {
+                Label(
+                    "Off until you turn it on. Recording only starts when you are already reciting into the app.",
+                    systemImage: "lock.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+            }
+
+            Section {
                 Toggle("Check doubted words against the audio", isOn: $settings.confirmsWordsWithAudio)
                     .disabled(!settings.canConfirmWordsWithAudio)
                 Text(settings.canConfirmWordsWithAudio
@@ -294,7 +329,7 @@ private struct TajweedSettings: View {
 
             Section {
                 Toggle("Check elongations against my recitation", isOn: $settings.analysesTajweedAudio)
-                Text("Madd only — how long a sound was held, which is measurable. Ghunnah, qalqalah and the nūn rules ask how a sound was *made*, and the model was measured to guess those from context rather than hear them, so they are shown on the page but not judged. Measured against elongations cut to half length: about one in four caught, with 4 false flags across 47 passages of correct recitation.")
+                Text("Two rules, both judged by how long something lasted — an elongation held, and a qalqalah given room to bounce. The nūn rules and the ṣifāt ask how a sound was *made*, which cannot be judged from recordings of correct recitation, so they are shown on the page and not marked. Across three reciters: qalqalah about one in four caught, madd about one in eight, together 5 false flags in 58 āyāt.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -304,7 +339,7 @@ private struct TajweedSettings: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("Also judge ghunnah and qalqalah", isOn: $settings.judgesSifatFromAudio)
+                Toggle("Also judge ghunnah and qalqalah from the model", isOn: $settings.judgesSifatFromAudio)
                     .disabled(!settings.analysesTajweedAudio)
                 Text("Measured with a ghunnah's sound removed altogether, this caught 2.7% of them while questioning 67 correctly recited ones. The model predicts which rule a letter carries from the letters around it rather than hearing whether you applied it, so it mostly agrees with the text no matter what you recite. It is here because the choice is yours, not because it works.")
                     .font(.caption)

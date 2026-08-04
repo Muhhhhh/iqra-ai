@@ -227,6 +227,33 @@ final class AppSettings {
     /// inference time — still around 25× faster than real time — and keeps the
     /// pronunciation model resident.
     var confirmsWordsWithAudio: Bool = true
+
+    /// Keep this session's audio and verdicts on disk.
+    ///
+    /// Off, and it stays off until asked for. Nothing is uploaded — a WAV and a JSON land
+    /// in Application Support and stay there. It is here because every threshold in this
+    /// app is fitted to studio recordings of qurrāʾ who do not make the mistakes it exists
+    /// to catch, and no amount of further tuning against those recordings fixes that.
+    var keepsSessionAudio: Bool = false {
+        didSet { UserDefaults.standard.set(keepsSessionAudio, forKey: Self.keepsAudioKey) }
+    }
+    static let keepsAudioKey = "keepsSessionAudio"
+
+    var recordingsDirectory: URL? { SessionRecorder.defaultDirectory() }
+
+    /// How many sessions are kept, and how much room they take.
+    var savedRecordings: (count: Int, megabytes: Double) {
+        guard let directory = recordingsDirectory,
+              let files = try? FileManager.default.contentsOfDirectory(
+                  at: directory, includingPropertiesForKeys: [.fileSizeKey]
+              )
+        else { return (0, 0) }
+        let audio = files.filter { $0.pathExtension == "wav" }
+        let bytes = files.reduce(0) {
+            $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return (audio.count, Double(bytes) / 1e6)
+    }
     /// The phoneme script the confirmation needs.
     var locatedPhonemeScript: URL? { PhonemeScript.locate() }
     var canConfirmWordsWithAudio: Bool { hasNeuralTajweed && locatedPhonemeScript != nil }
@@ -250,7 +277,9 @@ final class AppSettings {
     /// Set by the view when a passage loads; the scripted transcript is derived from it.
     var target: RecitationTarget?
 
-    private init() {}
+    private init() {
+        keepsSessionAudio = UserDefaults.standard.bool(forKey: Self.keepsAudioKey)
+    }
 
     // MARK: - Component reuse
     //
@@ -370,9 +399,15 @@ final class AppSettings {
                 recognizer: makeRecognizer(),
                 aligner: TokenAligner(options: alignmentOptions),
                 tajweed: makeTajweedAnalyzer(),
-                scorer: makePronunciationScorer()
+                scorer: makePronunciationScorer(),
+                recorder: makeRecorder()
             )
         )
+    }
+
+    private func makeRecorder() -> SessionRecorder? {
+        guard keepsSessionAudio, let directory = recordingsDirectory else { return nil }
+        return SessionRecorder(directory: directory)
     }
 
     private func makePronunciationScorer() -> PronunciationScorer? {

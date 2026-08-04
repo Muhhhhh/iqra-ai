@@ -11,6 +11,9 @@ public struct PipelineComponents: Sendable {
     public var tajweed: any TajweedAnalyzer
     /// Optional second opinion on words the matcher doubted, taken from the audio itself.
     public var scorer: PronunciationScorer?
+    /// Optionally keeps the session's audio and verdicts on disk. Off unless the reciter
+    /// asked for it — see `SessionRecorder`.
+    public var recorder: SessionRecorder?
 
     public init(
         capture: any AudioCapture,
@@ -18,8 +21,10 @@ public struct PipelineComponents: Sendable {
         recognizer: any SpeechRecognizer,
         aligner: TokenAligner = TokenAligner(),
         tajweed: any TajweedAnalyzer = NoOpTajweedAnalyzer(),
-        scorer: PronunciationScorer? = nil
+        scorer: PronunciationScorer? = nil,
+        recorder: SessionRecorder? = nil
     ) {
+        self.recorder = recorder
         self.scorer = scorer
         self.capture = capture
         self.vad = vad
@@ -94,6 +99,7 @@ public actor RecitationPipeline {
         clearedByAudio = []
         gain.reset()
         await components.vad.reset()
+        await components.recorder?.begin()
         transition(to: .starting)
 
         let stream: AsyncStream<AudioChunk>
@@ -153,6 +159,7 @@ public actor RecitationPipeline {
         }
 
         guard let target else {
+            await components.recorder?.discard()
             transition(to: .stopped)
             return
         }
@@ -164,6 +171,8 @@ public actor RecitationPipeline {
 
         // Already analysed segment by segment while listening; nothing more to compute.
         let notes = tajweedNotes
+
+        await components.recorder?.finish(words: alignment.words, notes: notes)
 
         emit(.finished(
             RecitationResult(
@@ -186,6 +195,7 @@ public actor RecitationPipeline {
         // there to tell them whether the microphone is working and whether they are
         // clipping, and reporting a normalised level would hide both.
         emit(.level(rms: min(1.0, frame.rms * 12), peak: frame.peak))
+        await components.recorder?.append(frame)
         let lifted = gain.apply(to: frame)
         for segment in await components.vad.process(lifted) {
             await process(segment: segment)
@@ -229,6 +239,7 @@ public actor RecitationPipeline {
             )
         }
 
+        await components.recorder?.noteSegment(aligned)
         emit(.segment(aligned))
         emit(.alignment(cleared(alignment)))
 
