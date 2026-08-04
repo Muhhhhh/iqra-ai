@@ -2049,9 +2049,31 @@ extension TajweedCalibration {
     /// align, so comparing a reciter measured per āyah against one measured over
     /// twenty-second segments would credit the difference to the voice when it belongs to
     /// the passage length.
+    /// Every place a rule can be violated in the sequence, one position each.
+    ///
+    /// For qalqalah that is the echo symbol. For madd it is the first symbol of a run
+    /// longer than two counts — below three the app does not judge shortness at all, so
+    /// testing them would measure a check that never runs.
+    static func testablePositions(_ symbols: [Int], rule: TajweedRule) -> [Int] {
+        if rule == .qalqalah {
+            return symbols.indices.filter { symbols[$0] == AlignedTajweedAnalyzer.qalqalaEcho }
+        }
+        var positions: [Int] = []
+        var index = 0
+        while index < symbols.count {
+            let symbol = symbols[index]
+            var end = index + 1
+            while end < symbols.count, symbols[end] == symbol { end += 1 }
+            if [27, 28, 29, 30, 31].contains(symbol), end - index > 2 { positions.append(index) }
+            index = end
+        }
+        return positions
+    }
+
     static func hypothesisRate(
         audio: AudioChunk,
         symbols: [Int],
+        rule: TajweedRule = .qalqalah,
         model: MuaalemTajweedAnalyzer,
         scorer: HypothesisScorer
     ) async -> (tested: Int, preferMistake: Int, median: Double) {
@@ -2059,12 +2081,16 @@ extension TajweedCalibration {
               let phonemes = observed.probabilities["phonemes"]
         else { return (0, 0, 0) }
         var supports: [Double] = []
-        for position in symbols.indices
-        where symbols[position] == AlignedTajweedAnalyzer.qalqalaEcho {
+        for position in testablePositions(symbols, rule: rule) {
             if let comparison = scorer.compare(
-                probabilities: phonemes, symbols: symbols, at: position, rule: .qalqalah
+                probabilities: phonemes, symbols: symbols, at: position, rule: rule
             ) {
                 supports.append(comparison.support)
+                // One line per instance, with the stop that produced the bounce, so a
+                // threshold can be swept and the five letters compared without re-running
+                // the model. Grep-shaped on purpose.
+                let letter = position > 0 ? symbols[position - 1] : 0
+                print("SUPPORT \(comparison.support) \(letter)")
             }
         }
         guard !supports.isEmpty else { return (0, 0, 0) }
@@ -2102,13 +2128,13 @@ extension TajweedCalibration {
             let target = try await store.target(surah: surah)
             for verse in target.verses.prefix(arguments.limitPerSurah) {
                 guard let entry = script[verse.reference],
-                      entry.symbols.contains(UInt8(AlignedTajweedAnalyzer.qalqalaEcho)),
                       let url = try? await library.fetch(verse.reference, reciter: reciter),
                       let audio = try? AudioFileLoader.load(url: url)
                 else { continue }
                 let result = await hypothesisRate(
                     audio: audio,
                     symbols: entry.symbols.map(Int.init),
+                    rule: arguments.judgeSifat ? .maddWajibMuttasil : .qalqalah,
                     model: model,
                     scorer: scorer
                 )
