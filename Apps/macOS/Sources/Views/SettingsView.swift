@@ -67,6 +67,33 @@ private struct MatchingSettings: View {
                 .padding(.top, 4)
             }
 
+
+            Section {
+                Toggle("Check doubted words against the audio", isOn: $settings.confirmsWordsWithAudio)
+                    .disabled(!settings.canConfirmWordsWithAudio)
+                Text(settings.canConfirmWordsWithAudio
+                     ? "When the matcher doubts a word, the expected sounds are aligned to your recording and the doubt is dropped if they are there. Measured on reference recitation it removes about a fifth of the false flags without missing any more mistakes. Doubles the work per phrase, and keeps the pronunciation model in memory."
+                     : "Needs the pronunciation model and the phoneme script — run scripts/convert-tajweed-model.py and scripts/export-phonemes.py.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("Second opinion")
+            }
+
+            Section {
+                Button("Restore Defaults") { settings.resetTuningToDefaults() }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct AudioSettings: View {
+    @State private var settings = AppSettings.shared
+
+    var body: some View {
+        Form {
             Section {
                 Toggle("Keep my recitation on this Mac", isOn: $settings.keepsSessionAudio)
                 Text("Saves each session as a sound file, with a note of every word and rule the app questioned. Nothing is uploaded and nothing leaves this Mac — the files sit in a folder you can open, listen to, and delete.")
@@ -102,32 +129,6 @@ private struct MatchingSettings: View {
                 .padding(.top, 4)
             }
 
-            Section {
-                Toggle("Check doubted words against the audio", isOn: $settings.confirmsWordsWithAudio)
-                    .disabled(!settings.canConfirmWordsWithAudio)
-                Text(settings.canConfirmWordsWithAudio
-                     ? "When the matcher doubts a word, the expected sounds are aligned to your recording and the doubt is dropped if they are there. Measured on reference recitation it removes about a fifth of the false flags without missing any more mistakes. Doubles the work per phrase, and keeps the pronunciation model in memory."
-                     : "Needs the pronunciation model and the phoneme script — run scripts/convert-tajweed-model.py and scripts/export-phonemes.py.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                Text("Second opinion")
-            }
-
-            Section {
-                Button("Restore Defaults") { settings.resetTuningToDefaults() }
-            }
-        }
-        .formStyle(.grouped)
-    }
-}
-
-private struct AudioSettings: View {
-    @State private var settings = AppSettings.shared
-
-    var body: some View {
-        Form {
             Section {
                 Picker("Detector", selection: $settings.vadKind) {
                     ForEach(VADKind.allCases) { kind in
@@ -328,62 +329,66 @@ private struct TajweedSettings: View {
             }
 
             Section {
-                Toggle("Check elongations against my recitation", isOn: $settings.analysesTajweedAudio)
-                Text("Two rules, both judged by how long something lasted — an elongation held, and a qalqalah given room to bounce. The nūn rules and the ṣifāt ask how a sound was *made*, which cannot be judged from recordings of correct recitation, so they are shown on the page and not marked. Qalqalah is judged by whether the bounce is there at all, not by timing it: a page recited twice — once normally, once swallowing every one — drew no flags on the first and six on the second, and five qurrāʾ draw about one in forty. Madd is timed against your own pace, and catches about one in eight.")
+                Toggle("Check my recitation against the text", isOn: $settings.analysesTajweedAudio)
+                Text("Two rules are judged, and only two. Madd is timed against the pace of your own elongations. Qalqalah is judged by whether the bounce is there at all — the āyah is matched against your audio twice, once as written and once with the bounce removed, and whichever fits better is taken as what you said.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
                 Slider(value: $settings.maddShortfall, in: 0.6...0.9)
-                Text("An elongation is questioned when it runs under \(settings.maddShortfall, format: .percent.precision(.fractionLength(0))) of what your own pace suggests. Lower is quieter. The default was measured on studio recordings of a qārī, so if it questions elongations you know were right, lower it — that is the setting doing its job, not you being wrong.")
+                    .disabled(!settings.analysesTajweedAudio)
+                Text("An elongation is questioned below \(settings.maddShortfall, format: .percent.precision(.fractionLength(0))) of your own pace. Lower is quieter. If it questions elongations you know were right, lower it — that is this setting's job, not a verdict on your recitation.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Toggle("Also judge ghunnah and qalqalah from the model", isOn: $settings.judgesSifatFromAudio)
-                    .disabled(!settings.analysesTajweedAudio)
-                Text("Measured with a ghunnah's sound removed altogether, this caught 2.7% of them while questioning 67 correctly recited ones. The model predicts which rule a letter carries from the letters around it rather than hearing whether you applied it, so it mostly agrees with the text no matter what you recite. It is here because the choice is yours, not because it works.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Toggle("Also flag vowels held too long", isOn: $settings.flagsOverlongVowels)
-                    .disabled(!settings.analysesTajweedAudio)
-                Text("Catches a madd where the text has none. It works, but costs about four and a half false flags for every real one — and reciters lengthen vowels for reasons the text does not record.")
+                if !settings.hasNeuralTajweed {
+                    Label(
+                        "No pronunciation model installed, so only elongation is checked. Run scripts/convert-tajweed-model.py to add qalqalah.",
+                        systemImage: "exclamationmark.triangle"
+                    )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                LabeledContent(
-                    "Method",
-                    value: settings.hasNeuralTajweed ? "Muaalem model" : "Duration only"
-                )
-                .font(.caption)
-                if settings.hasNeuralTajweed {
-                    Text("The Muaalem model (obadx, MIT) reports, frame by frame, whether what it heard was nasalised, echoed, heavy or light. Ghunnah, qalqalah and the four nūn-sākinah rules are checked against it; madd is still checked by duration.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("No model installed, so only elongation is checked — against the pace of your own recitation. Run scripts/convert-tajweed-model.py to enable the rest.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
-                LabeledContent("Reading", value: "Ḥafṣ ʿan ʿĀṣim")
+            } header: {
+                Text("From your recitation")
+            } footer: {
+                Text("Measured against recitation with mistakes put in on purpose: qalqalah drew nothing on a page recited properly and six flags on the same page with every bounce swallowed. Madd catches about one shortened elongation in three, at roughly one wrong flag per fifty āyāt. Neither has been reviewed by a qārī — treat what they say as a prompt to listen again, never as a correction.")
                     .font(.caption)
-                Text("Every rule, threshold and reference recording here assumes this riwāyah. Madd lengths differ legitimately between readings, so reciting Warsh or Qālūn will have correct recitation questioned. There is no setting for this because nothing in the app has been calibrated for another reading.")
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+
+            Section {
+                Toggle("Flag vowels held too long", isOn: $settings.flagsOverlongVowels)
+                    .disabled(!settings.analysesTajweedAudio)
+                Text("Catches a madd where the text has none. Wrong about four and a half times for every time it is right, and reciters lengthen vowels for reasons the text does not record.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Judge ṣifāt from the model's own heads", isOn: $settings.judgesSifatFromAudio)
+                    .disabled(!settings.analysesTajweedAudio)
+                Text("With a ghunnah's sound removed altogether it still reported the ghunnah as present. It reads the letters around a sound rather than the sound itself, so it agrees with the text whatever you recite.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } header: {
-                Text("From your recitation")
+                Text("Measured, and off")
             } footer: {
-                Label(
-                    "Experimental, and off by default. Measured with the evidence deliberately removed, it responds to whether the word was recited rather than to whether the rule inside it was produced: taking the nasalisation out of a word and leaving the rest standing, the model still reports the ghunnah as present 87% of the time. Skipping a ghunnah while reciting the word will probably not be caught. Questioned rules are underlined with a dashed line on the page. Measured against Al-Husary's murattal, about one in seven correctly recited ghunnahs, ikhfāʾ and qalqalah is questioned — how many real mistakes that catches is unmeasured, because nothing tested so far contains one. Idghām bi-ghunnah and iqlāb are not judged from audio at all, because the model gives no answer for a quarter of correct ones. Calibration is on Ḥafṣ ʿan ʿĀṣim and does not transfer to another riwāyah. Nothing here has been reviewed by a qārī. The app only asks whether the attribute the text requires was actually present — it does not grade recitation — and it stays silent unless the model is confidently against the rule. Treat anything it says as a prompt to listen again, never as a correction.",
-                    systemImage: "hand.raised.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .padding(.top, 4)
+                Text("Kept so the measurements can be repeated, not because they work.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+
+            Section {
+                LabeledContent("Reading", value: "Ḥafṣ ʿan ʿĀṣim")
+                Text("Every threshold assumes this riwāyah. Madd lengths differ legitimately between readings, so reciting Warsh or Qālūn would have correct recitation questioned. There is no setting for it because nothing here has been calibrated for another reading.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)

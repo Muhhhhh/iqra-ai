@@ -192,15 +192,24 @@ final class AppSettings {
     var prefersCalligraphicPage: Bool = true
     /// Check the length of elongations against the recitation.
     ///
-    /// Madd only. The other rules are shown on the page but not judged from audio — the
-    /// model cannot answer questions about the quality of a sound, only its timing.
-    var analysesTajweedAudio: Bool = false
+    /// Judge madd and qalqalah from the recitation.
+    ///
+    /// Persisted, like every other tajweed setting here. They were not, and only
+    /// `keepsSessionAudio` survived a relaunch, so a reciter who turned checking on found
+    /// it silently off next time they opened the app — and a session recorded in between
+    /// carried no tajweed verdicts at all with no indication why.
+    var analysesTajweedAudio: Bool = false {
+        didSet { UserDefaults.standard.set(analysesTajweedAudio, forKey: "analysesTajweedAudio") }
+    }
     /// Also report vowels held longer than the text asks for.
     ///
     /// Off by default: measured, it is wrong about four and a half times for every time
     /// it is right, and reciters stretch vowels for reasons the text does not record.
     var flagsOverlongVowels: Bool = false {
-        didSet { cachedTajweedAnalyzer = nil }
+        didSet {
+            cachedTajweedAnalyzer = nil
+            UserDefaults.standard.set(flagsOverlongVowels, forKey: "flagsOverlongVowels")
+        }
     }
     /// How far short an elongation must fall before it is questioned.
     ///
@@ -208,7 +217,10 @@ final class AppSettings {
     /// number behind the default was measured on studio recordings of a qārī. Lower is
     /// quieter.
     var maddShortfall: Double = 0.8 {
-        didSet { cachedTajweedAnalyzer = nil }
+        didSet {
+            cachedTajweedAnalyzer = nil
+            UserDefaults.standard.set(maddShortfall, forKey: "maddShortfall")
+        }
     }
     /// Also judge ghunnah and qalqalah from the pronunciation model.
     ///
@@ -217,7 +229,10 @@ final class AppSettings {
     /// because it is the reciter's call whether to see an unreliable opinion, but the
     /// numbers go on the switch so the call is an informed one.
     var judgesSifatFromAudio: Bool = false {
-        didSet { cachedTajweedAnalyzer = nil }
+        didSet {
+            cachedTajweedAnalyzer = nil
+            UserDefaults.standard.set(judgesSifatFromAudio, forKey: "judgesSifatFromAudio")
+        }
     }
 
     /// Ask the audio about words the matcher doubted, and clear the ones it supports.
@@ -278,7 +293,14 @@ final class AppSettings {
     var target: RecitationTarget?
 
     private init() {
-        keepsSessionAudio = UserDefaults.standard.bool(forKey: Self.keepsAudioKey)
+        let defaults = UserDefaults.standard
+        keepsSessionAudio = defaults.bool(forKey: Self.keepsAudioKey)
+        analysesTajweedAudio = defaults.bool(forKey: "analysesTajweedAudio")
+        flagsOverlongVowels = defaults.bool(forKey: "flagsOverlongVowels")
+        judgesSifatFromAudio = defaults.bool(forKey: "judgesSifatFromAudio")
+        if let stored = defaults.object(forKey: "maddShortfall") as? Double {
+            maddShortfall = stored
+        }
     }
 
     // MARK: - Component reuse
