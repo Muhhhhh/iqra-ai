@@ -25,30 +25,29 @@ import Foundation
 /// is stable across those. The comparison is against the reciter's own vowels, so they
 /// are their own control.
 ///
-/// ## It does not separate, and is not wired into the app
+/// ## It separates, weakly, and is not yet wired into the app
 ///
-/// Measured over 327 ghunnahs of Al-Husary against the same ghunnahs with their audio
+/// Measured over 739 ghunnahs of Al-Husary against the same ghunnahs with their audio
 /// replaced by his own vowel sound:
 ///
-///     ghunnah intact    median  0.5 dB   p10 -13.2   p90 13.6
-///     ghunnah removed   median -3.9 dB   p10 -13.1   p90 18.6
+///     ghunnah intact    median  5.2 dB   p10  -7.2   p90 16.2
+///     ghunnah removed   median -3.5 dB   p10 -13.1   p90 18.2
 ///
-/// The medians differ in the right direction and the distributions overlap almost
-/// entirely. Any threshold between them questions about half of correct ghunnahs to catch
-/// two thirds of missing ones, which is close enough to chance to be useless.
+/// Nearly nine decibels between the medians, and a threshold at zero questions 29% of
+/// correct ghunnahs to catch 61% of missing ones. Weak, and real.
 ///
-/// Three variants were tried: control taken from the adjacent non-nasal phoneme, from the
-/// reciter's pooled vowels, and measuring the murmur between alignment spikes rather than
-/// the spike itself — the last being the fix that made madd work. None separated.
+/// It first measured as pure chance — intact and removed medians 0.5 dB apart, half of
+/// all correct ghunnahs questioned — and that was a labelling fault rather than a
+/// property of the signal. The exporter advanced the phonetiser's ṣifāt one step per
+/// character when a group spans several, so the frames being compared were not the
+/// ghunnahs at all. Everything measured through those labels understated what is there.
 ///
-/// The likely reason is that a band ratio is too blunt for this. A male reciter's F0 sits
-/// near 100–150 Hz, so the 200–450 Hz band carries the first formant of ordinary vowels
-/// too, and the contrast that nasalisation adds is small beside the variation between one
-/// vowel and the next. The measures phoneticians actually use for nasality — A1–P0, which
-/// compares the first formant's amplitude against the nasal peak — need formant tracking,
-/// not band energies.
+/// The overlap that remains is still too wide to ship: p10 of a correct ghunnah sits
+/// below p90 of a removed one, so no threshold separates them cleanly. The measures
+/// phoneticians use — A1–P0, comparing the first formant's amplitude against the nasal
+/// peak — need formant tracking rather than band energies, and would likely do better.
 ///
-/// Kept because the measurement is worth being able to repeat: `IqraEval --nasality`.
+/// `IqraEval --nasality` repeats the measurement.
 public struct NasalityMeasure: Sendable {
 
     public struct Bands: Sendable {

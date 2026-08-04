@@ -1002,6 +1002,8 @@ struct Arguments {
     var frameContext = 0
     /// Print the alignment, posterior and audio clocks side by side.
     var checkClock = false
+    /// Re-enable the ṣifāt heads for measurement.
+    var judgeSifat = false
     var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
@@ -1066,6 +1068,7 @@ struct Arguments {
             case "--refine": refineAlignment = true
             case "--context": frameContext = next().flatMap { Int($0) } ?? frameContext
             case "--check-clock": checkClock = true
+            case "--judge-sifat": judgeSifat = true
             case "--sifa":
                 let name = next() ?? ""
                 trainingSifa = PhonemeScript.Sifa.allCases.first { "\($0)" == name } ?? .ghonna

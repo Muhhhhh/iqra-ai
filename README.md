@@ -621,21 +621,28 @@ genuine catch:
 Reciters also lengthen vowels for reasons the text does not record — pace, breath,
 emphasis — so some of what it calls an error is not one. Available, and off.
 
-**Measuring nasality from the signal was tried too, and does not separate.** If the model
+**Measuring nasality from the signal separates weakly — and first appeared not to, for a
+reason worth recording.** If the model
 predicts ṣifāt instead of hearing them, the obvious answer is to stop asking it: nasality
 has a known acoustic signature, a murmur near 250 Hz and an anti-formant near 1 kHz, and
 forced alignment says exactly which frames are the nūn. Over 327 of Al-Husary's ghunnahs,
 against the same ghunnahs with their audio replaced by his own vowel:
 
-    ghunnah intact    median  0.5 dB   p10 -13.2   p90 13.6
-    ghunnah removed   median -3.9 dB   p10 -13.1   p90 18.6
+    ghunnah intact    median  5.2 dB   p10  -7.2   p90 16.2
+    ghunnah removed   median -3.5 dB   p10 -13.1   p90 18.2
 
-Right direction, almost complete overlap. Any threshold questions about half of correct
-ghunnahs to catch two thirds of missing ones. Three variants were tried, including the
-between-spikes fix that made madd work; none separated. A band ratio is probably too
-blunt — a male reciter's F0 sits near 100–150 Hz, so the low band carries ordinary vowel
-formants too, and the measures phoneticians use for nasality (A1–P0) need formant tracking
-rather than band energies. `IqraEval --nasality` keeps the measurement.
+Nearly nine decibels between the medians; a threshold at zero questions 29% of correct
+ghunnahs to catch 61% of missing ones. Weak, but not chance.
+
+It measured as chance until the ṣifāt labels were fixed — the exporter had been advancing
+the phonetiser's attributes one step per character where a group spans several, so the
+stretches being compared were not the ghunnahs. Every measurement taken through those
+labels understated the signal, and two conclusions in this file were wrong because of it.
+The letter-level ṣifāt check was re-run on corrected labels and moved from 2.7% to 6.7%,
+which does not rescue it; the word-level one never used those labels and stands unchanged.
+
+The remaining overlap is still too wide to ship: the tenth percentile of a correct
+ghunnah sits below the ninetieth of a removed one. `IqraEval --nasality` repeats it.
 
 So of the routes to audio tajweed, one works and the rest do not: the ṣifah heads predict from context instead of reporting what they heard, and
 duration measured through forced alignment does not track the duration actually recited.

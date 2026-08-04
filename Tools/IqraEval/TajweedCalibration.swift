@@ -1191,7 +1191,11 @@ enum TajweedCalibration {
             throw IqraEval.EvalError.missing("quran-phonemes.bin — run scripts/export-phonemes.py")
         }
         let script = try PhonemeScript(contentsOf: scriptURL)
-        let analyzer = AlignedTajweedAnalyzer(model: model, script: script)
+        let analyzer = AlignedTajweedAnalyzer(
+            model: model,
+            script: script,
+            options: .init(judgesSifat: arguments.judgeSifat)
+        )
         let library = ReciterAudioLibrary()
         let aligner = CTCForcedAligner(blank: 0)
 
