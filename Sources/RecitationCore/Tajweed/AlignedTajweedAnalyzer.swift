@@ -120,6 +120,22 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// would be by following letter, and there are too few of each in a session to
         /// build a median from. Left available, and off.
         public var judgesGhunnahHold: Bool
+        /// Judge qalqalah by timing the echo rather than by asking which reading the audio
+        /// supports.
+        ///
+        /// **Off, because it does not work.** A page holding twenty-three qalqalahs was
+        /// recited twice by the same person, once normally and once swallowing every one
+        /// of them. The duration check raised the same number of flags both times: none.
+        ///
+        /// It cannot work as posed. A bounce runs 20 to 60 ms and the model advances 40 ms
+        /// a frame, so the echo is about one frame; what the check actually timed on that
+        /// recitation was 160 to 280 ms, mostly the sound that follows the bounce. The 12
+        /// of 39 it scored against synthetic negatives was detecting the excision — cutting
+        /// audio out moves the frames around it, and moved frames are what it reads.
+        ///
+        /// Kept behind a flag so that measurement can be repeated, not because the check is
+        /// worth having.
+        public var judgesQalqalaByDuration: Bool
         /// How far below the reciter's own releases of that same letter a qalqalah must
         /// fall before it is questioned.
         ///
@@ -200,6 +216,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             ghunnahShortfall: Double = 0.7,
             judgesGhunnahHold: Bool = false,
             qalqalaShortfall: Double = 0.7,
+            judgesQalqalaByDuration: Bool = false,
             implausibleRatio: ClosedRange<Double> = 0.35...3.5,
             chunkSeconds: Double = .infinity,
             wordSupport: Double = 0.5,
@@ -213,6 +230,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.ghunnahShortfall = ghunnahShortfall
             self.judgesGhunnahHold = judgesGhunnahHold
             self.qalqalaShortfall = qalqalaShortfall
+            self.judgesQalqalaByDuration = judgesQalqalaByDuration
             self.implausibleRatio = implausibleRatio
             self.chunkSeconds = chunkSeconds
             self.wordSupport = wordSupport
@@ -263,6 +281,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     private let script: PhonemeScript
     private let options: Options
     private let aligner = CTCForcedAligner(blank: 0)
+    private let scorer = HypothesisScorer()
     private var lastCoverage: TajweedCoverage = .none
     /// Seconds per haraka, gathered from every two-count madd heard this session.
     ///
@@ -422,13 +441,22 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 )
                 required += ghunnahRuns(in: owner).count
             }
-            notes += qalqalaNotes(
-                spans: spans,
-                owner: owner,
-                symbols: symbols,
-                supported: supported,
-                examined: &examined
-            )
+            if options.judgesQalqalaByDuration {
+                notes += qalqalaNotes(
+                    spans: spans,
+                    owner: owner,
+                    symbols: symbols,
+                    supported: supported,
+                    examined: &examined
+                )
+            } else {
+                notes += await qalqalaSupportNotes(
+                    segment: segment,
+                    words: wordsByVerse,
+                    supported: supported,
+                    examined: &examined
+                )
+            }
             required += qalqalaPositions(in: owner, symbols: symbols).count
             // What this analyzer will actually try to judge: elongations, minus the final
             // vowel of the passage, and minus the short ones unless over-length checking
@@ -1031,6 +1059,105 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             qalqalaReleases[entry.letter, default: []].append(entry.seconds)
             if qalqalaReleases[entry.letter]!.count > 40 {
                 qalqalaReleases[entry.letter]!.removeFirst()
+            }
+        }
+        return notes
+    }
+
+    /// Was the qalqalah made, judged by which reading the audio supports?
+    ///
+    /// Not by timing it. A bounce is briefer than one frame of this model, so its length
+    /// cannot be read; what can be asked is whether the sound is there at all. The
+    /// phonetiser writes the bounce as its own symbol, so the question has a clean form:
+    /// align the āyah's phonemes twice, once as written and once with that symbol deleted,
+    /// and see which sequence explains the audio better.
+    ///
+    /// Measured on a page recited twice by the same person, and on five qurrāʾ:
+    ///
+    ///     Al-Minshawi  0/23     Abdul Basit  0/23     the reciter, ordinary    1/28
+    ///     Al-Husary    1/23     Al-Shuraym   1/23     the reciter, swallowing 18/33
+    ///     Al-Afasy     1/23
+    ///
+    /// A floor near 2.6% across six voices and three recording qualities, against 54.5%
+    /// when the bounces are deliberately dropped. It is the first check here to separate
+    /// correct recitation from a mistake a person actually made, rather than from audio
+    /// this repository had edited itself.
+    ///
+    /// **One āyah at a time, always.** Measured over the app's twenty-second segments the
+    /// same audio gave 46.5% on ordinary recitation — a coin toss — because a long span
+    /// aligns badly and the noise reads as a missing bounce. The unit is not a detail; it
+    /// is most of whether this works.
+    private func qalqalaSupportNotes(
+        segment: AlignedAudioSegment,
+        words: [VerseReference: [TargetWord]],
+        supported: Set<Int>,
+        examined: inout Int
+    ) async -> [TajweedNote] {
+        // Where each āyah of this segment begins and ends, from the words the matcher
+        // placed in the audio.
+        var spans: [VerseReference: (start: Double, end: Double)] = [:]
+        for evaluation in segment.words {
+            guard let range = evaluation.timeRange, evaluation.status == .correct else { continue }
+            let existing = spans[evaluation.reference]
+            spans[evaluation.reference] = (
+                min(existing?.start ?? range.lowerBound, range.lowerBound),
+                max(existing?.end ?? range.upperBound, range.upperBound)
+            )
+        }
+
+        let rate = AudioChunk.canonicalSampleRate
+        var notes: [TajweedNote] = []
+        for (reference, span) in spans.sorted(by: { $0.key < $1.key }) {
+            guard let entry = script[reference],
+                  entry.symbols.contains(UInt8(Self.qalqalaEcho)),
+                  let verseWords = words[reference]
+            else { continue }
+
+            let from = Int((span.start - segment.audio.startTime) * rate)
+            let to = Int((span.end - segment.audio.startTime) * rate)
+            guard from >= 0, to <= segment.audio.samples.count, to - from > 3200 else { continue }
+            let chunk = AudioChunk(samples: Array(segment.audio.samples[from..<to]), startTime: 0)
+
+            guard let observed = try? await model.probabilities(for: chunk),
+                  let phonemes = observed.probabilities["phonemes"]
+            else { continue }
+
+            let symbols = entry.symbols.map(Int.init)
+            for position in symbols.indices where symbols[position] == Self.qalqalaEcho {
+                guard let comparison = scorer.compare(
+                    probabilities: phonemes, symbols: symbols, at: position, rule: .qalqalah
+                ) else { continue }
+
+                // Whose word this is, and whether the audio bore the word out at all.
+                let wordIndex = position < entry.wordOfPhoneme.count
+                    ? Int(entry.wordOfPhoneme[position]) : 0
+                guard wordIndex < verseWords.count else { continue }
+                let word = verseWords[wordIndex]
+                guard supported.contains(word.globalIndex) else { continue }
+                examined += 1
+
+                // Nothing is said unless the audio positively favours the mistake. The
+                // threshold is zero rather than a fitted value because the floor sits
+                // within four points of it on every voice measured, qārī and learner
+                // alike — there is nothing here that a tuned number would buy.
+                guard comparison.support < 0 else { continue }
+
+                let start = segment.audio.startTime + Double(from) / rate
+                notes.append(
+                    TajweedNote(
+                        rule: .qalqalah,
+                        targetIndex: word.globalIndex,
+                        reference: reference,
+                        timeRange: start...(start + Double(to - from) / rate),
+                        confidence: .low,
+                        message: "This qalqalah sounds swallowed — the letter should bounce before the next sound.",
+                        measurement: .init(
+                            observed: comparison.expected,
+                            expected: comparison.violated,
+                            unit: ""
+                        )
+                    )
+                )
             }
         }
         return notes
