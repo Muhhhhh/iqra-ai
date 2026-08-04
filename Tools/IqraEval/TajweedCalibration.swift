@@ -748,8 +748,18 @@ enum TajweedCalibration {
                     let row = Int(middle / 0.01)
                     guard row >= 0, row < rows.count else { continue }
 
+                    // A window rather than a single 10 ms frame. Nasalisation is a
+                    // sustained state of the vocal tract, not an instant, and one frame
+                    // is very little to judge it on: with one, a classifier trained on
+                    // four reciters reached 0.62 on a fifth. The window also lets the
+                    // model see the transitions either side, which is where the velum
+                    // opening and closing actually shows.
+                    let context = arguments.frameContext
                     var line = "\(label)"
-                    for value in rows[row] { line += ",\(String(format: "%.4f", value))" }
+                    for offset in -context...context {
+                        let index = min(max(row + offset, 0), rows.count - 1)
+                        for value in rows[index] { line += ",\(String(format: "%.4f", value))" }
+                    }
                     line += "\n"
                     handle.write(Data(line.utf8))
                     written += 1
