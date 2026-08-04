@@ -103,7 +103,21 @@ enum TajweedCalibration {
         }
 
         let store = try SQLiteVerseStore(url: databaseURL)
-        let reciter = Reciter.catalogue.first { $0.id == arguments.reciterID } ?? .husary
+        // Any everyayah folder name, not only the seven the app offers.
+        //
+        // Training data wants *voices* above all else — held-out nasality AUC climbs
+        // 0.693, 0.764, 0.783, 0.754, 0.786, 0.803 as reciters are added and has not
+        // levelled off, while six times the āyāt per reciter changed nothing. The app's
+        // catalogue is a curated shortlist for listening; the corpus should not be
+        // limited to it.
+        let reciter = Reciter.catalogue.first { $0.id == arguments.reciterID }
+            ?? Reciter(
+                id: arguments.reciterID,
+                name: arguments.reciterID,
+                arabicName: "",
+                style: "everyayah",
+                approximateMegabytes: 0
+            )
         let library = ReciterAudioLibrary()
         let analyzer = MuaalemTajweedAnalyzer(
             modelURL: tajweedModel,
