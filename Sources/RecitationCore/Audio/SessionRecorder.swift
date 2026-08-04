@@ -178,8 +178,9 @@ public actor SessionRecorder {
         // fragment at each boundary — six of the thirteen sessions recorded so far were
         // two-second scraps with not one word matched to audio. A recording nothing
         // aligned to says nothing about anyone's recitation. Length alone is too weak a
-        // test for those, since they clear a second easily.
-        let aligned = words.contains { $0.timeRange != nil }
+        // test for those, since they clear a second easily — and so is a single matched
+        // word, which is how two more scraps survived the first version of this check.
+        let aligned = words.count { $0.timeRange != nil } >= 5
         guard samplesWritten > Int(AudioChunk.canonicalSampleRate),
               aligned || samplesWritten > Int(AudioChunk.canonicalSampleRate * 10)
         else {

@@ -340,6 +340,12 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     private func perVerse(_ segment: AlignedAudioSegment) -> [AlignedAudioSegment] {
         var spans: [VerseReference: (start: Double, end: Double, words: [WordEvaluation])] = [:]
         for evaluation in segment.words {
+            // Confident words only. This span is what madd reads its durations from, and
+            // widening it to words the matcher doubted admits audio that may not be the
+            // word at all — measured on a real page, that alone took madd from one false
+            // flag to four. Qalqalah does not slice from here; it takes the doubted words
+            // too, because comparing two readings of the same audio survives what
+            // measuring a length off it does not.
             guard let range = evaluation.timeRange, evaluation.status == .correct else { continue }
             var entry = spans[evaluation.reference]
                 ?? (range.lowerBound, range.upperBound, [])
@@ -1185,7 +1191,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         // placed in the audio.
         var spans: [VerseReference: (start: Double, end: Double)] = [:]
         for evaluation in segment.words {
-            guard let range = evaluation.timeRange, evaluation.status == .correct else { continue }
+            guard let range = evaluation.timeRange, evaluation.status.wasRecited else { continue }
             let existing = spans[evaluation.reference]
             spans[evaluation.reference] = (
                 min(existing?.start ?? range.lowerBound, range.lowerBound),
@@ -1221,7 +1227,15 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                     ? Int(entry.wordOfPhoneme[position]) : 0
                 guard wordIndex < verseWords.count else { continue }
                 let word = verseWords[wordIndex]
-                guard supported.contains(word.globalIndex) else { continue }
+                // No alignment-confidence gate, unlike madd. That gate asks whether the
+                // audio really holds the word before a duration is read off it, and a
+                // duration read from a bad alignment is arbitrary. This comparison is not:
+                // both readings are forced onto the same audio, so a poor alignment hurts
+                // them equally and the difference between them survives it.
+                //
+                // Keeping it cost most of the detection. On a page recited with every
+                // bounce deliberately swallowed the gate let one flag through where the
+                // measurement itself favoured the mistake six times.
                 examined += 1
 
                 // Nothing is said unless the audio positively favours the mistake. The

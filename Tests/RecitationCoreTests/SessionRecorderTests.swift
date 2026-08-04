@@ -6,15 +6,17 @@ import Testing
 struct SessionRecorderTests {
 
     /// A word the matcher placed in the audio — what makes a recording worth keeping.
-    private func recited() -> [WordEvaluation] {
-        [WordEvaluation(
-            targetIndex: 0,
-            reference: VerseReference(surah: 1, ayah: 1),
-            expectedText: "بِسْمِ",
-            status: .correct,
-            timeRange: 0...0.5,
-            recognizerConfidence: 1
-        )]
+    private func recited(_ count: Int = 6) -> [WordEvaluation] {
+        (0..<count).map { index in
+            WordEvaluation(
+                targetIndex: index,
+                reference: VerseReference(surah: 1, ayah: 1),
+                expectedText: "بِسْمِ",
+                status: .correct,
+                timeRange: Double(index) * 0.5...(Double(index) * 0.5 + 0.4),
+                recognizerConfidence: 1
+            )
+        }
     }
 
     private func temporaryDirectory() -> URL {
@@ -142,5 +144,22 @@ extension SessionRecorderTests {
         }
         let folder = await recorder.finish(words: [], notes: [])
         #expect(folder != nil)
+    }
+}
+
+extension SessionRecorderTests {
+
+    @Test("A fragment holding one matched word is still discarded")
+    func discardsNearlyEmptyFragment() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let recorder = SessionRecorder(directory: directory)
+
+        // Two page turns in a row left exactly this: a two-second scrap with a single
+        // word landing in it, which cleared the first version of the test.
+        await recorder.begin()
+        let samples = (0..<32_000).map { sin(Float($0) * 0.05) * 0.5 }
+        await recorder.append(AudioChunk(samples: samples, startTime: 0))
+        #expect(await recorder.finish(words: recited(1), notes: []) == nil)
     }
 }

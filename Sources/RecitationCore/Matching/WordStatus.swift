@@ -18,6 +18,21 @@ public enum WordStatus: Sendable, Equatable {
     /// Not reached yet. Only produced for partial (still-recording) alignments.
     case notYetRecited
 
+    /// Whether the audio holds this word at all, whichever word the matcher settled on.
+    ///
+    /// `uncertain` means the matcher doubted *which* word it heard, not whether anything
+    /// was said — so for anything measuring the sound rather than the identity, an
+    /// uncertain word is present and usable. Excluding it is how a check comes to look
+    /// away from the very thing it is testing: swallowing a qalqalah makes the word harder
+    /// to recognise, which turns it uncertain, which dropped it from the audio the
+    /// qalqalah check was given.
+    public var wasRecited: Bool {
+        switch self {
+        case .correct, .uncertain: return true
+        case .wrong, .skipped, .notYetRecited: return false
+        }
+    }
+
     public var isMistake: Bool {
         switch self {
         case .wrong, .skipped: return true
