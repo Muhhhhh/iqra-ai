@@ -996,6 +996,8 @@ struct Arguments {
     /// Where to write labelled training frames, and for which ṣifah.
     var trainingOutput: String?
     var trainingSifa: PhonemeScript.Sifa = .ghonna
+    /// Re-align in short chunks before labelling frames.
+    var refineAlignment = false
     var referenceShortfall = 0.7
     /// Clear doubted words whose audio supports the expected text.
     var usePronunciationScoring = false
@@ -1057,6 +1059,7 @@ struct Arguments {
             case "--reference-madd": referenceMadd = true
             case "--nasality": nasalityTest = true
             case "--training-frames": trainingOutput = next()
+            case "--refine": refineAlignment = true
             case "--sifa":
                 let name = next() ?? ""
                 trainingSifa = PhonemeScript.Sifa.allCases.first { "\($0)" == name } ?? .ghonna

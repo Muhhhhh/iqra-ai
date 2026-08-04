@@ -494,6 +494,78 @@ enum TajweedCalibration {
     /// Held-out reciters are the point of the `--reciter` flag here: a classifier that
     /// separates one voice's nasals from its vowels has learned that voice, not
     /// nasality.
+    /// Re-align in short chunks, using a coarse pass only to decide where to cut.
+    ///
+    /// Alignment accuracy decays with passage length: measured on the same export,
+    /// nasal-against-oral separation is `d` 0.30 over short surahs and 0.13 over
+    /// Al-Baqarah, and on the long ones the surviving difference sits in a high mel bin
+    /// where nothing about nasalisation lives. Three hundred phonemes across several
+    /// ten-second posterior windows is simply more than one Viterbi path holds together.
+    ///
+    /// So the long path is used only to find safe places to cut — high-confidence spikes,
+    /// spaced a few seconds apart — and each chunk is then aligned on its own, against
+    /// only the phonemes it contains. Every chunk is short enough to be in the regime
+    /// where alignment was validated, and the frames come back on the original timeline.
+    static func refinedSpans(
+        audio: AudioChunk,
+        symbols: [Int],
+        coarse: [CTCForcedAligner.Span],
+        observed: MuaalemTajweedAnalyzer.Observation,
+        model: MuaalemTajweedAnalyzer,
+        aligner: CTCForcedAligner,
+        chunkSeconds: Double = 4
+    ) async -> [(index: Int, start: Double, end: Double)] {
+        guard !coarse.isEmpty else { return [] }
+        let rate = AudioChunk.canonicalSampleRate
+
+        // Cut points: the most confident spike at least `chunkSeconds` past the last cut.
+        var cuts: [Int] = [0]
+        var lastTime = 0.0
+        for span in coarse {
+            let time = Double(span.frames.lowerBound) * observed.frameDuration
+            if time - lastTime >= chunkSeconds, span.confidence > 0.6 {
+                cuts.append(span.index)
+                lastTime = time
+            }
+        }
+        cuts.append(symbols.count)
+
+        var refined: [(index: Int, start: Double, end: Double)] = []
+        for pair in zip(cuts, cuts.dropFirst()) where pair.1 > pair.0 {
+            let phonemes = Array(symbols[pair.0..<pair.1])
+            guard let first = coarse.first(where: { $0.index >= pair.0 }),
+                  let last = coarse.last(where: { $0.index < pair.1 })
+            else { continue }
+            // A little air either side, so a boundary phoneme is not clipped.
+            let startTime = max(0, Double(first.frames.lowerBound) * observed.frameDuration - 0.15)
+            let endTime = min(
+                audio.duration,
+                Double(last.frames.upperBound) * observed.frameDuration + 0.25
+            )
+            let from = Int(startTime * rate), to = Int(endTime * rate)
+            guard to > from, to <= audio.samples.count else { continue }
+
+            let slice = AudioChunk(samples: Array(audio.samples[from..<to]), startTime: 0)
+            guard let localObserved = try? await model.probabilities(for: slice),
+                  let localPhonemes = localObserved.probabilities["phonemes"],
+                  let localSpans = try? aligner.align(probabilities: localPhonemes, target: phonemes)
+            else { continue }
+
+            for span in localSpans {
+                let next = localSpans.first { $0.index > span.index }
+                let localStart = Double(span.frames.lowerBound) * localObserved.frameDuration
+                let localEnd = Double(next?.frames.lowerBound ?? span.frames.upperBound)
+                    * localObserved.frameDuration
+                refined.append((
+                    index: pair.0 + span.index,
+                    start: startTime + localStart,
+                    end: startTime + max(localEnd, localStart + localObserved.frameDuration)
+                ))
+            }
+        }
+        return refined
+    }
+
     static func exportTrainingFrames(
         _ arguments: Arguments,
         reciter: Reciter,
@@ -546,40 +618,28 @@ enum TajweedCalibration {
                 let rows = features.logMel(audio.samples)
                 guard !rows.isEmpty else { continue }
 
-                for span in spans where span.index < plane.count {
-                    let label = Int(plane[span.index])
-                    guard label > 0, span.confidence >= 0.5 else { continue }
-                    // Where this phoneme actually *is*, rather than where CTC spiked.
-                    //
-                    // A spike marks recognition, not extent, and the blank frames after it
-                    // belong acoustically to one of the two neighbouring sounds — which
-                    // one is not recoverable from spike positions, but it is recoverable
-                    // from the posteriors, which say at every frame how much each symbol
-                    // is present. So each frame between two spikes is given to whichever
-                    // of the two neighbours the model favours there, and the phoneme's
-                    // segment is the run it wins.
-                    //
-                    // Taking the whole gap instead put the following vowel inside every
-                    // consonant's segment, so frames from both classes sampled the same
-                    // material and a linear classifier scored 0.535 on data it had
-                    // memorised.
-                    let next = spans.first { $0.index > span.index }
-                    let from = span.frames.lowerBound
-                    let limit = next?.frames.lowerBound ?? span.frames.upperBound
-                    guard limit > from else { continue }
-                    let mine = Int(entry.symbols[span.index])
-                    let theirs = next.map { Int(entry.symbols[$0.index]) }
-                    var end = from + 1
-                    while end < limit {
-                        guard end < phonemes.count, mine < phonemes[end].count else { break }
-                        let ours = phonemes[end][mine]
-                        let other = theirs.flatMap { $0 < phonemes[end].count ? phonemes[end][$0] : nil } ?? 0
-                        if other > ours { break }
-                        end += 1
-                    }
-                    let middle = (from + end) / 2
-                    // Alignment frames are 40 ms; log-mel rows are 10 ms.
-                    let row = middle * 4
+                let refined = arguments.refineAlignment
+                    ? await refinedSpans(
+                        audio: audio, symbols: entry.symbols.map(Int.init),
+                        coarse: spans, observed: observed, model: model, aligner: aligner
+                      )
+                    : spans.map { span in
+                        let next = spans.first { $0.index > span.index }
+                        return (
+                            index: span.index,
+                            start: Double(span.frames.lowerBound) * observed.frameDuration,
+                            end: Double(next?.frames.lowerBound ?? span.frames.upperBound)
+                                * observed.frameDuration
+                        )
+                      }
+
+                for placed in refined where placed.index < plane.count {
+                    let label = Int(plane[placed.index])
+                    guard label > 0 else { continue }
+                    // The middle of where the phoneme was placed, in seconds, converted
+                    // to a log-mel row at 10 ms a row.
+                    let middle = (placed.start + placed.end) / 2
+                    let row = Int(middle / 0.01)
                     guard row >= 0, row < rows.count else { continue }
 
                     var line = "\(label)"
