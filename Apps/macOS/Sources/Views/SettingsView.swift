@@ -304,6 +304,13 @@ private struct TajweedSettings: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                Toggle("Also judge ghunnah and qalqalah", isOn: $settings.judgesSifatFromAudio)
+                    .disabled(!settings.analysesTajweedAudio)
+                Text("Measured with a ghunnah's sound removed altogether, this caught 2.7% of them while questioning 67 correctly recited ones. The model predicts which rule a letter carries from the letters around it rather than hearing whether you applied it, so it mostly agrees with the text no matter what you recite. It is here because the choice is yours, not because it works.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Toggle("Also flag vowels held too long", isOn: $settings.flagsOverlongVowels)
                     .disabled(!settings.analysesTajweedAudio)
                 Text("Catches a madd where the text has none. It works, but costs about four and a half false flags for every real one — and reciters lengthen vowels for reasons the text does not record.")

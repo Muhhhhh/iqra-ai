@@ -210,6 +210,15 @@ final class AppSettings {
     var maddShortfall: Double = 0.8 {
         didSet { cachedTajweedAnalyzer = nil }
     }
+    /// Also judge ghunnah and qalqalah from the pronunciation model.
+    ///
+    /// Off, and measured to be near-useless: with a ghunnah's audio removed entirely the
+    /// heads caught 2.7% while questioning 67 correct ones. Exposed rather than hidden
+    /// because it is the reciter's call whether to see an unreliable opinion, but the
+    /// numbers go on the switch so the call is an informed one.
+    var judgesSifatFromAudio: Bool = false {
+        didSet { cachedTajweedAnalyzer = nil }
+    }
 
     /// Ask the audio about words the matcher doubted, and clear the ones it supports.
     ///
@@ -409,7 +418,8 @@ final class AppSettings {
                     script: script,
                     options: .init(
                         maddShortfall: maddShortfall,
-                        flagsOverlongVowels: flagsOverlongVowels
+                        flagsOverlongVowels: flagsOverlongVowels,
+                        judgesSifat: judgesSifatFromAudio
                     )
                 )
             }

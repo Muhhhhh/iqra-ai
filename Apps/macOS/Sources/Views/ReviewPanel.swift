@@ -7,6 +7,7 @@ import SwiftUI
 /// this" — rather than "error"/"mistake". A machine judgement about someone's recitation
 /// should read as an invitation to listen again, not a verdict.
 struct ReviewPanel: View {
+    @State private var quran = QuranLibrary.shared
     let model: RecitationSessionModel
     @Binding var selectedWord: Int?
     /// False in Fog, where nothing is judged, so there is nothing to review.
@@ -97,6 +98,33 @@ struct ReviewPanel: View {
                             Text("Went back over")
                         } footer: {
                             Text("Words you repeated while correcting yourself. Not mistakes.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // Every rule the passage contains, from the text.
+                    //
+                    // Separate from the section below, and deliberately so: this says
+                    // what the text *requires*, which follows from the Uthmani script and
+                    // is exact. The section below says what your recitation was judged
+                    // on, which is madd alone. Putting them in one list would let the
+                    // second borrow the first's authority.
+                    let present = rulesInPassage
+                    if !present.isEmpty {
+                        Section {
+                            ForEach(present, id: \.rule) { entry in
+                                RulePresenceRow(
+                                    rule: entry.rule,
+                                    count: entry.words.count,
+                                    isSelected: entry.words.contains { $0 == selectedWord },
+                                    onSelect: { selectNext(in: entry.words) }
+                                )
+                            }
+                        } header: {
+                            Text("Rules in this passage")
+                        } footer: {
+                            Text("What the text requires, taken from the Uthmani script — exact, and nothing to do with how you recited. Tap one to step through where it falls on the page.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -219,6 +247,27 @@ struct ReviewPanel: View {
             onSelect: { selectedWord = note.targetIndex },
             onPlay: { play(note) }
         )
+    }
+
+    /// The rules this page carries, with the words each falls on, in muṣḥaf order.
+    private var rulesInPassage: [(rule: TajweedRule, words: [Int])] {
+        var byRule: [TajweedRule: [Int]] = [:]
+        for (index, spans) in quran.tajweedSpansByWord {
+            for span in spans { byRule[span.rule, default: []].append(index) }
+        }
+        return byRule
+            .map { (rule: $0.key, words: $0.value.sorted()) }
+            .sorted { $0.words.count > $1.words.count }
+    }
+
+    /// Step to the next occurrence each time the row is tapped, so one tap per place.
+    private func selectNext(in words: [Int]) {
+        guard !words.isEmpty else { return }
+        guard let current = selectedWord, let position = words.firstIndex(of: current) else {
+            selectedWord = words.first
+            return
+        }
+        selectedWord = words[(position + 1) % words.count]
     }
 
     // MARK: - Playback
@@ -473,6 +522,37 @@ private struct TajweedStatusRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// One rule the passage contains, and how many times.
+private struct RulePresenceRow: View {
+    let rule: TajweedRule
+    let count: Int
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(TajweedStyle.colour(for: rule))
+                .frame(width: 12, height: 12)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(rule.title).font(.callout)
+                Text(rule.arabicTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .environment(\.layoutDirection, .rightToLeft)
+            }
+            Spacer(minLength: 4)
+            Text("\(count)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .background(isSelected ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.12)) : nil)
     }
 }
 
