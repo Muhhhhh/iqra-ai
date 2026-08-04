@@ -156,6 +156,12 @@ private struct AudioSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if settings.practiceMode == .fog {
+                    Text("Fog closes a phrase after \(settings.segmentationTrailingSilence, format: .number.precision(.fractionLength(2)))s of silence rather than \(settings.vadTrailingSilence, format: .number.precision(.fractionLength(2)))s, so words appear while you are still on them. Nothing is judged in Fog, so the accuracy a longer phrase buys is worth little — but expect a word to lag now and then before the matcher places it. ⌘H if one sticks.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if settings.practiceMode.hidesUnrecitedText {
                     Text("⌘H reveals the next word when you are stuck — one word past wherever you actually reached, so it cannot be held down to uncover the page.")
                         .font(.caption)

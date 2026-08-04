@@ -149,7 +149,30 @@ final class AppSettings {
     var beamSize: Int = 1
 
     /// How the page behaves while reciting: visible throughout, or filling in as you go.
-    var practiceMode: PracticeMode = .review
+    var practiceMode: PracticeMode = .review {
+        didSet { if practiceMode != oldValue { invalidateComponents() } }
+    }
+
+    /// Silence that closes a segment, which is what sets how quickly words appear.
+    ///
+    /// Fog is the one mode where speed can be bought cheaply. Nothing is judged in it, so
+    /// the accuracy that a long segment buys — whisper decodes a short fragment markedly
+    /// worse, which is why the default is 1.6 s — is worth very little there. What matters
+    /// instead is that the word appears while you are still on it. A quarter of a second
+    /// of silence closes the segment, so the page keeps up with the reciter rather than
+    /// trailing a breath behind.
+    ///
+    /// Fog Pro keeps the accurate setting: it reports skipped and misread words, and those
+    /// verdicts are only worth having if the transcription behind them is.
+    var segmentationTrailingSilence: Double {
+        practiceMode == .fog ? min(0.25, vadTrailingSilence) : vadTrailingSilence
+    }
+
+    /// Cap on a segment's length, likewise shortened for Fog so a long phrase still
+    /// reveals as it goes rather than all at once at the end.
+    var segmentationMaximum: Double {
+        practiceMode == .fog ? 3.0 : SpeechSegmentAssembler.Options.default.maximumSegmentDuration
+    }
 
     /// Muṣḥaf page zoom. 1 fits the page to the window; above that the page view scrolls.
     var pageZoom: Double = 1.0
@@ -235,6 +258,7 @@ final class AppSettings {
         var beamSize: Int
         var sileroThreshold: Double
         var trailingSilence: Double
+        var maximumSegment: Double
         var preRoll: Double
         var vadKind: VADKind
     }
@@ -255,7 +279,8 @@ final class AppSettings {
             vadURL: locatedVADModel,
             beamSize: beamSize,
             sileroThreshold: sileroThreshold,
-            trailingSilence: vadTrailingSilence,
+            trailingSilence: segmentationTrailingSilence,
+            maximumSegment: segmentationMaximum,
             preRoll: vadPreRoll,
             vadKind: vadKind
         )
@@ -342,7 +367,9 @@ final class AppSettings {
     }
 
     private func makePronunciationScorer() -> PronunciationScorer? {
-        guard confirmsWordsWithAudio,
+        // Likewise: it exists to suppress false flags, and Fog raises none.
+        guard practiceMode.reportsMistakes,
+              confirmsWordsWithAudio,
               let model = locatedTajweedModel,
               let frontend = locatedTajweedFrontend,
               let scriptURL = locatedPhonemeScript,
@@ -356,7 +383,10 @@ final class AppSettings {
     }
 
     private func makeTajweedAnalyzer() -> any TajweedAnalyzer {
-        guard analysesTajweedAudio else { return NoOpTajweedAnalyzer() }
+        // Fog reports nothing, so running the pronunciation model over every segment
+        // would be latency spent on a result no one sees — and latency is the whole
+        // point of that mode.
+        guard analysesTajweedAudio, practiceMode.reportsMistakes else { return NoOpTajweedAnalyzer() }
         if let cachedTajweedAnalyzer { return cachedTajweedAnalyzer }
         let built = buildTajweedAnalyzer()
         cachedTajweedAnalyzer = built
@@ -425,7 +455,8 @@ final class AppSettings {
         }
 
         let segmentation = SpeechSegmentAssembler.Options(
-            trailingSilence: vadTrailingSilence,
+            trailingSilence: segmentationTrailingSilence,
+            maximumSegmentDuration: segmentationMaximum,
             preRoll: vadPreRoll
         )
 
