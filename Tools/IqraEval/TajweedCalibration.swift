@@ -710,6 +710,29 @@ enum TajweedCalibration {
 
                 let plane = entry.plane(sifa)
                 guard !plane.isEmpty else { continue }
+
+                // The band-ratio contrast, as one more feature beside the mel window.
+                //
+                // The two carry different information and each is weak alone: the learned
+                // window reaches 0.65 on a held-out voice, the ratio separates a correct
+                // ghunnah from a removed one at 29% against 61%. The ratio is also
+                // explicitly *relative* — each phoneme measured against this reciter's own
+                // vowels — which is exactly what the raw mel window lacks and why it
+                // transfers so poorly between speakers.
+                let nasality = NasalityMeasure()
+                let rate = AudioChunk.canonicalSampleRate
+                func slice(_ span: CTCForcedAligner.Span) -> [Float]? {
+                    let from = Int(Double(span.frames.lowerBound) * observed.frameDuration * rate)
+                    let to = Int(Double(span.frames.upperBound) * observed.frameDuration * rate)
+                    guard from >= 0, to <= audio.samples.count, to - from >= 400 else { return nil }
+                    return Array(audio.samples[from..<to])
+                }
+                var oralPool: [Float] = []
+                for span in spans where span.index < entry.symbols.count
+                    && [32, 33, 34].contains(Int(entry.symbols[span.index])) {
+                    if let piece = slice(span) { oralPool.append(contentsOf: piece) }
+                    if oralPool.count > 16000 { break }
+                }
                 // Raw log-mel, *not* the normalised stacked rows the model consumes.
                 // Normalising each mel bin across the utterance divides out the very
                 // level differences a ṣifah is made of.
@@ -754,8 +777,14 @@ enum TajweedCalibration {
                     // four reciters reached 0.62 on a fifth. The window also lets the
                     // model see the transitions either side, which is where the velum
                     // opening and closing actually shows.
+                    let contrast = oralPool.count >= 400
+                        ? (spans.first { $0.index == placed.index }
+                            .flatMap { slice($0) }
+                            .flatMap { nasality.contrast(nasal: $0, against: oralPool) } ?? 0)
+                        : 0
+
                     let context = arguments.frameContext
-                    var line = "\(label)"
+                    var line = "\(label),\(String(format: "%.3f", contrast))"
                     for offset in -context...context {
                         let index = min(max(row + offset, 0), rows.count - 1)
                         for value in rows[index] { line += ",\(String(format: "%.4f", value))" }
