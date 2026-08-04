@@ -64,6 +64,31 @@ public struct Verse: Sendable, Equatable, Identifiable {
         self.words = words
     }
 
+    /// The basmala that opens a surah, as words the matcher can expect.
+    ///
+    /// Recited at the head of every surah but At-Tawbah, and printed there in the muṣḥaf —
+    /// yet it is an āyah only of Al-Fātiḥah. Everywhere else the text of āyah 1 begins with
+    /// the surah's own first word, so a reciter who says the basmala, as almost everyone
+    /// does, produces four words the matcher has no target for. They come back as words
+    /// that were never in the text: invented, in a checker whose whole purpose is not to
+    /// invent.
+    ///
+    /// Numbered āyah 0, which is not a verse number in any muṣḥaf and is the point. It
+    /// keeps the basmala out of āyah 1's text, where it does not belong, while giving it a
+    /// reference of its own so a verdict can be attributed to it. Nothing that reads the
+    /// phonetic script finds an entry for it, so tajweed simply passes over it rather than
+    /// judging a line that is not part of the surah.
+    ///
+    /// Returns nil for Al-Fātiḥah, where it already is āyah 1, and for At-Tawbah, which
+    /// opens without it.
+    public static func basmala(surah: Int) -> Verse? {
+        guard surah != 1, surah != 9, (1...114).contains(surah) else { return nil }
+        return Verse(
+            reference: VerseReference(surah: surah, ayah: 0),
+            text: "بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ"
+        )
+    }
+
     /// Convenience for building a verse from whitespace-separated text.
     ///
     /// Tokens that carry no Arabic letter are dropped. Splitting Uthmani text on spaces

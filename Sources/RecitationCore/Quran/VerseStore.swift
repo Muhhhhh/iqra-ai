@@ -19,7 +19,13 @@ public protocol VerseStore: Sendable {
 extension VerseStore {
     /// Build a recitation target spanning a verse range.
     public func target(from start: VerseReference, through end: VerseReference) async throws -> RecitationTarget {
-        RecitationTarget(verses: try await verses(from: start, through: end))
+        // Every surah that begins in the range gets its basmala, for the reason
+        // `Verse.basmala` records: it is recited and printed, but is an āyah only of
+        // Al-Fātiḥah, so without it four words the reciter certainly said have nothing
+        // to match and come back as words they never uttered.
+        RecitationTarget(
+            verses: SQLiteVerseStore.withBasmala(try await verses(from: start, through: end))
+        )
     }
 }
 

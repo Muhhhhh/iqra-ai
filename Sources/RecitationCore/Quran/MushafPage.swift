@@ -45,6 +45,22 @@ public struct MushafWord: Sendable, Equatable, Identifiable {
         self.translation = translation
         self.transliteration = transliteration
     }
+    /// The same word, numbered. Used when reading order is only known after every line is
+    /// assembled — the basmala carries no words in the layout data and is added later, so
+    /// numbering during the query would leave a gap where it belongs.
+    public func withTargetIndex(_ index: Int) -> MushafWord {
+        MushafWord(
+            reference: reference,
+            position: position,
+            text: text,
+            code: code,
+            kind: kind,
+            targetIndex: index,
+            translation: translation,
+            transliteration: transliteration
+        )
+    }
+
 }
 
 /// One of the fifteen lines of a muṣḥaf page.

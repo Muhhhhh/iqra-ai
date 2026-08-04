@@ -299,10 +299,23 @@ public struct MushafPageView: View {
         case .surahHeader(let surah):
             SurahHeaderBand(name: surahNames[surah] ?? "", fontSize: fontSize)
         case .basmala:
-            Text("بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ")
+            // Drawn word by word when the line carries them, so the basmala highlights as
+            // it is recited like every other word. It has no QCF glyph codes — the layout
+            // data never gave this line words — so it always sets in Unicode text.
+            if line.words.isEmpty {
+                Text("بِسْمِ ٱللَّهِ ٱلرَّحْمَـٰنِ ٱلرَّحِيمِ")
+                    .font(QuranFont.mushaf(size: fontSize * (usesCalligraphy ? 0.62 : 0.88)))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: fontSize * 0.22) {
+                    ForEach(line.words) { word in
+                        wordView(word)
+                    }
+                }
                 .font(QuranFont.mushaf(size: fontSize * (usesCalligraphy ? 0.62 : 0.88)))
-                .foregroundStyle(.primary.opacity(0.85))
                 .frame(maxWidth: .infinity)
+            }
         case .words:
             JustifiedLine(
                 minimumSpacing: layout.fontSize * layout.spacingRatio,
@@ -359,7 +372,12 @@ public struct MushafPageView: View {
                 word: word,
                 status: status,
                 fontSize: fontSize,
-                font: layout.wordFont,
+                // A word with no glyph code cannot be set in the calligraphic font — the
+                // basmala is the only one, since the layout data gives that line no words
+                // — so it falls back to the muṣḥaf text face along with its text.
+                font: layout.usesCalligraphy && word.code.isEmpty
+                    ? QuranFont.mushaf(size: fontSize * 0.88)
+                    : layout.wordFont,
                 displayText: layout.usesCalligraphy && !word.code.isEmpty ? word.code : word.text,
                 sourceText: word.text,
                 isCalligraphic: layout.usesCalligraphy && !word.code.isEmpty,

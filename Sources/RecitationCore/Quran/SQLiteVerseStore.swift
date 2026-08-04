@@ -328,14 +328,6 @@ extension SQLiteVerseStore {
             if juz == 0 { juz = Int(sqlite3_column_int(statement, 8)) }
             if !surahOrder.contains(surah) { surahOrder.append(surah) }
 
-            // Recited words are numbered in reading order so the view can map each one
-            // onto the alignment result without a second lookup.
-            var targetIndex: Int?
-            if kind == .word {
-                targetIndex = recitedIndex
-                recitedIndex += 1
-            }
-
             wordsByLine[line, default: []].append(
                 MushafWord(
                     reference: reference,
@@ -343,23 +335,65 @@ extension SQLiteVerseStore {
                     text: Self.text(statement, 4),
                     code: Self.text(statement, 9),
                     kind: kind,
-                    targetIndex: targetIndex,
+                    targetIndex: nil,
                     translation: Self.text(statement, 6),
                     transliteration: Self.text(statement, 7)
                 )
             )
         }
 
-        let lines = lineKinds.keys.sorted().map { number -> MushafLine in
+        var lines = lineKinds.keys.sorted().map { number -> MushafLine in
             let descriptor = lineKinds[number]!
             let kind: MushafLine.Kind
             switch descriptor.kind {
             case "surah_header": kind = .surahHeader(surah: descriptor.surah)
-            case "basmala": kind = .basmala(surah: descriptor.surah)
+            case "basmala":
+                kind = .basmala(surah: descriptor.surah)
+                // The basmala line is drawn from a `page_lines` row and carries no words
+                // in the database, so until now it was text on the page and nothing to
+                // the matcher. A reciter says it — almost everyone does — and four words
+                // with no target came back as words they never uttered.
+                //
+                // Given words here rather than in `target(page:)` so that the page and the
+                // target cannot disagree: they are numbered in the same pass as every
+                // other word, and the view can highlight them like any other.
+                if let basmala = Verse.basmala(surah: descriptor.surah) {
+                    wordsByLine[number] = basmala.words.enumerated().map { offset, word in
+                        MushafWord(
+                            reference: basmala.reference,
+                            position: offset,
+                            text: word.text,
+                            // No QCF glyph code: the calligraphic fonts have none for a
+                            // line the layout data never gave words to, so this renders as
+                            // Unicode text, which is what it did before.
+                            code: "",
+                            kind: .word,
+                            targetIndex: nil,
+                            translation: "",
+                            transliteration: ""
+                        )
+                    }
+                }
             default: kind = .words
             }
             return MushafLine(number: number, kind: kind, words: wordsByLine[number] ?? [])
         }
+
+        // Number every recited word in reading order, basmala included, so the view can
+        // map each one onto the alignment result without a second lookup.
+        var recited = 0
+        lines = lines.map { line in
+            MushafLine(
+                number: line.number,
+                kind: line.kind,
+                words: line.words.map { word in
+                    guard word.kind == .word else { return word }
+                    defer { recited += 1 }
+                    return word.withTargetIndex(recited)
+                }
+            )
+        }
+        _ = recitedIndex
 
         return MushafPage(number: clamped, lines: lines, juz: juz, surahs: surahOrder)
     }
@@ -388,6 +422,25 @@ extension SQLiteVerseStore {
         return RecitationTarget(
             verses: order.map { Verse(reference: $0, words: byVerse[$0] ?? []) }
         )
+    }
+
+    /// Put the basmala in front of every surah that begins here.
+    ///
+    /// The muṣḥaf prints it and the reciter says it, but it is an āyah only of
+    /// Al-Fātiḥah, so without this the matcher has no target for four words that are
+    /// almost always recited and reports them as invented. Added wherever a verse 1
+    /// appears — which is exactly where a surah starts, whether the target is a page, a
+    /// whole surah or an arbitrary range.
+    static func withBasmala(_ verses: [Verse]) -> [Verse] {
+        var out: [Verse] = []
+        out.reserveCapacity(verses.count + 2)
+        for verse in verses {
+            if verse.reference.ayah == 1, let basmala = Verse.basmala(surah: verse.reference.surah) {
+                out.append(basmala)
+            }
+            out.append(verse)
+        }
+        return out
     }
 
     /// The page a surah begins on.

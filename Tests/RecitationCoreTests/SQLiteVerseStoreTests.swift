@@ -38,11 +38,15 @@ struct SQLiteVerseStoreTests {
         let store = try store()
         for info in try await store.surahs() {
             let target = try await store.target(surah: info.number)
+            // The basmala rides in front as āyah 0 for every surah but Al-Fātiḥah, which
+            // counts it as āyah 1, and At-Tawbah, which has none. It is not one of the
+            // surah's āyāt, so it is set aside before the numbering is checked.
+            let ayahs = target.verses.map(\.reference.ayah).filter { $0 > 0 }
+            let expectsBasmala = Verse.basmala(surah: info.number) != nil
             #expect(
-                target.verses.count == info.ayahCount,
+                target.verses.count == info.ayahCount + (expectsBasmala ? 1 : 0),
                 "surah \(info.number) returned \(target.verses.count) of \(info.ayahCount) āyāt"
             )
-            let ayahs = target.verses.map(\.reference.ayah)
             #expect(ayahs == Array(1...info.ayahCount), "surah \(info.number) has gaps in its numbering")
             #expect(target.verses.allSatisfy { !$0.words.isEmpty }, "surah \(info.number) has an empty verse")
         }
@@ -69,7 +73,9 @@ struct SQLiteVerseStoreTests {
     func longestSurah() async throws {
         let store = try store()
         let target = try await store.target(surah: 2)
-        #expect(target.verses.count == 286)
+        // 286 āyāt, and the basmala in front of them as āyah 0.
+        #expect(target.verses.count == 287)
+        #expect(target.verses.first?.reference.ayah == 0)
         // Al-Baqarah is by far the largest passage the aligner will ever see.
         #expect(target.flattenedWords.count > 6000)
     }
@@ -83,9 +89,12 @@ struct SQLiteVerseStoreTests {
             from: VerseReference(surah: 112, ayah: 3),
             through: VerseReference(surah: 113, ayah: 2)
         )
+        // Al-Falaq begins inside this range, so its basmala belongs to it. Al-Ikhlāṣ does
+        // not begin here — the range opens at its third āyah — so none is added there.
         #expect(target.verses.map(\.reference) == [
             VerseReference(surah: 112, ayah: 3),
             VerseReference(surah: 112, ayah: 4),
+            VerseReference(surah: 113, ayah: 0),
             VerseReference(surah: 113, ayah: 1),
             VerseReference(surah: 113, ayah: 2),
         ])
@@ -473,7 +482,12 @@ struct CalligraphyTests {
         var missing = 0
         for number in 1...MushafPage.count {
             let page = try await store.page(number)
-            missing += page.lines.flatMap(\.words).count { $0.code.isEmpty }
+            // The basmala is exempt, and is the only exemption. The layout data gives
+            // that line no words, so it has no QCF glyphs and is set in the text face —
+            // see MushafPageView. Every word the muṣḥaf itself lays out must have one, or
+            // the page renders a hole.
+            missing += page.lines.flatMap(\.words)
+                .count { $0.code.isEmpty && $0.reference.ayah != 0 }
         }
         #expect(missing == 0, "\(missing) words have no calligraphic glyph")
     }
@@ -498,7 +512,8 @@ struct CalligraphyTests {
             let page = try await store.page(number)
             #expect(QCFFont.register(page: number))
             let name = QCFFont.name(forPage: number)
-            for word in page.recitedWords.prefix(40) {
+            // Basmala words carry no code and are set in the text face instead.
+            for word in page.recitedWords.filter({ $0.reference.ayah != 0 }).prefix(40) {
                 let width = MushafMetrics.width(of: word.code, fontSize: 40, fontName: name)
                 #expect(width > 0, "page \(number): “\(word.text)” rendered to nothing")
             }
@@ -519,6 +534,9 @@ struct CalligraphyTests {
 
             let widths = page.lines.compactMap { line -> CGFloat? in
                 guard !line.words.isEmpty else { return nil }
+                // The basmala is centred rather than justified, and carries no glyph
+                // codes, so it is not one of the calligrapher's measured lines.
+                if case .basmala = line.kind { return nil }
                 return line.words.reduce(CGFloat(0)) {
                     $0 + MushafMetrics.width(of: $1.code, fontSize: 40, fontName: name)
                 }
@@ -636,5 +654,61 @@ struct PageLayoutCacheTests {
         }
         let perCall = Date().timeIntervalSince(start) / 20
         #expect(perCall > 0.000_1, "measurement got cheap; the caching rationale may no longer hold")
+    }
+}
+
+@Suite("Basmala")
+struct BasmalaTests {
+
+    @Test("Every surah opens with it, except the two that do not")
+    func coverage() {
+        // Al-Fātiḥah counts it as āyah 1 and At-Tawbah opens without it. Adding it to
+        // either would put words in front of a reciter that the muṣḥaf does not.
+        #expect(Verse.basmala(surah: 1) == nil)
+        #expect(Verse.basmala(surah: 9) == nil)
+        for surah in 2...114 where surah != 9 {
+            #expect(Verse.basmala(surah: surah) != nil, "surah \(surah)")
+        }
+    }
+
+    @Test("It is four words, numbered outside the surah's āyāt")
+    func shape() throws {
+        let basmala = try #require(Verse.basmala(surah: 95))
+        #expect(basmala.words.count == 4)
+        // Āyah 0 is not a verse number in any muṣḥaf, which is the point: it keeps the
+        // basmala out of āyah 1's text while still giving it a reference of its own.
+        #expect(basmala.reference.ayah == 0)
+        #expect(basmala.reference.surah == 95)
+    }
+
+    @Test("A page opening two surahs gets two basmalas, each before its own")
+    func insertedBeforeEachSurah() {
+        let verses = [
+            Verse(reference: VerseReference(surah: 94, ayah: 8), text: "وَإِلَىٰ رَبِّكَ فَٱرْغَب"),
+            Verse(reference: VerseReference(surah: 95, ayah: 1), text: "وَٱلتِّينِ وَٱلزَّيْتُونِ"),
+            Verse(reference: VerseReference(surah: 96, ayah: 1), text: "ٱقْرَأْ بِٱسْمِ رَبِّكَ"),
+        ]
+        let withBasmala = SQLiteVerseStore.withBasmala(verses)
+        let references = withBasmala.map(\.reference)
+        #expect(references.count == 5)
+        #expect(references[1] == VerseReference(surah: 95, ayah: 0))
+        #expect(references[2] == VerseReference(surah: 95, ayah: 1))
+        #expect(references[3] == VerseReference(surah: 96, ayah: 0))
+    }
+
+    @Test("A range starting mid-surah gets none")
+    func noneMidSurah() {
+        // The reciter did not begin a surah here, so they will not say it.
+        let verses = [
+            Verse(reference: VerseReference(surah: 2, ayah: 5), text: "أُو۟لَـٰٓئِكَ عَلَىٰ هُدًۭى"),
+            Verse(reference: VerseReference(surah: 2, ayah: 6), text: "إِنَّ ٱلَّذِينَ كَفَرُوا۟"),
+        ]
+        #expect(SQLiteVerseStore.withBasmala(verses).count == 2)
+    }
+
+    @Test("At-Tawbah opens without one even at its first āyah")
+    func tawbah() {
+        let verses = [Verse(reference: VerseReference(surah: 9, ayah: 1), text: "بَرَآءَةٌۭ مِّنَ ٱللَّهِ")]
+        #expect(SQLiteVerseStore.withBasmala(verses).count == 1)
     }
 }
