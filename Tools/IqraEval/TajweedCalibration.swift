@@ -2107,7 +2107,7 @@ extension TajweedCalibration {
                     model: model,
                     script: script,
                     options: .init(
-                        flagsOverlongVowels: true,
+                        flagsOverlongVowels: false,
                         // The plausibility guard is deliberately opened right up. It sits
                         // *before* a measurement becomes a note, so leaving it in place
                         // would mean counting how well the guard suppresses drift rather
@@ -2154,6 +2154,13 @@ extension TajweedCalibration {
 
             let whole = await analyse(chunked: false).analyze(segments: segments, target: target)
             let pieces = await analyse(chunked: true).analyze(segments: segments, target: target)
+            // What the app itself would say. `analyse` opens the plausibility guard right
+            // up so the alignment can be measured, which is the opposite of shipping
+            // behaviour — reporting its output as the app's would credit the checker with
+            // notes the guard exists to suppress.
+            let shippingAnalyzer = AlignedTajweedAnalyzer(model: model, script: script)
+            let shipped = await shippingAnalyzer.analyze(segments: segments, target: target)
+            let coverage = await shippingAnalyzer.coverage()
             let lengths = log.segments.map { $0.end - $0.start }
 
             func ratios(_ notes: [TajweedNote]) -> [Double] {
@@ -2167,6 +2174,23 @@ extension TajweedCalibration {
             print("    \(format(log.duration, 1))s, \(segments.count) segments, "
                   + "longest \(format(lengths.max() ?? 0, 1))s")
             print("    logged at the time              \(log.notes.count) notes")
+            var byRule: [String: Int] = [:]
+            for note in shipped { byRule[note.rule.rawValue, default: 0] += 1 }
+            print("    rules present / examined        \(coverage.required) / \(coverage.examined)")
+            print("    what the app would say          \(shipped.count) notes"
+                  + (byRule.isEmpty ? "" : "  " + byRule.sorted { $0.key < $1.key }
+                        .map { "\($0.key) \($0.value)" }.joined(separator: ", ")))
+            // Every qalqalah the analyser measured, guard open, to see whether the echo
+            // is even resolvable. The model advances 40 ms a frame and a bounce runs 20 to
+            // 60, so this asks whether the thing being timed is bigger than the ruler.
+            let echoes = pieces.filter { $0.rule == .qalqalah }.compactMap(\.measurement)
+            if !echoes.isEmpty {
+                let seconds = echoes.map(\.observed).sorted()
+                print("    qalqalah echoes measured        \(echoes.count), median "
+                      + "\(format(seconds[seconds.count / 2], 3))s = "
+                      + "\(format(seconds[seconds.count / 2] / 0.04, 1)) frames")
+                print("      range \(format(seconds.first ?? 0, 3))–\(format(seconds.last ?? 0, 3))s")
+            }
             print("    one alignment per segment       \(whole.count) notes, "
                   + "worst ratio \(format(ratios(whole).map { max($0, 1 / $0) }.max() ?? 1, 1))×")
             print("    re-aligned in 4s pieces         \(pieces.count) notes, "
