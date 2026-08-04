@@ -2198,14 +2198,19 @@ extension TajweedCalibration {
                     guard let a = $0.start, let b = $0.end else { return false }
                     return a < piece.end && b > piece.start
                 }
+                // Every āyah the segment touches, in order. Taking only the first was a
+                // shortcut that survives on long āyāt and fails on short ones — page 604
+                // is three surahs of two- and three-word āyāt, several to a segment, so
+                // most of the audio would have been aligned against phonemes from a
+                // different verse entirely.
                 var symbols: [Int] = []
-                var seen = Set<Int>()
-                for word in inside where !seen.contains(word.index) {
-                    seen.insert(word.index)
-                    guard let e = script[VerseReference(surah: word.surah, ayah: word.ayah)]
-                    else { continue }
+                var used: [VerseReference] = []
+                for word in inside {
+                    let reference = VerseReference(surah: word.surah, ayah: word.ayah)
+                    guard used.last != reference else { continue }
+                    used.append(reference)
+                    guard let e = script[reference] else { continue }
                     symbols.append(contentsOf: e.symbols.map(Int.init))
-                    break   // one āyah's script per segment is enough to test the idea
                 }
                 guard symbols.count > 4,
                       let obs = try? await model.probabilities(for: chunk),
