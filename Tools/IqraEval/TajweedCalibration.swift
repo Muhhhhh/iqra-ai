@@ -592,6 +592,24 @@ enum TajweedCalibration {
     /// Held-out reciters are the point of the `--reciter` flag here: a classifier that
     /// separates one voice's nasals from its vowels has learned that voice, not
     /// nasality.
+    ///
+    /// Every ṣifah is written in one pass, and the output is binary. Both are about the
+    /// cost of running this: the expensive part is a Muaalem forward pass per āyah, and
+    /// exporting one attribute at a time repeated that same inference ten times over for
+    /// labels that were already computed. The text format was a smaller waste but a real
+    /// one — 150 MB a reciter where the floats occupy 77, and slow to parse besides.
+    ///
+    ///     "IQFR"  magic
+    ///     int32   version (1)
+    ///     int32   features per frame
+    ///     int32   ṣifāt per frame (10, in `PhonemeScript.Sifa` order)
+    ///     int32   frame count
+    ///     per frame:
+    ///       uint8   label[ṣifāt]   0 no expectation, else the 1-based class
+    ///       float32 feature[features]
+    ///
+    /// The first feature is the band-ratio nasality contrast; the rest are the log-mel
+    /// window, oldest frame first.
     /// Re-align in short chunks, using a coarse pass only to decide where to cut.
     ///
     /// Alignment accuracy decays with passage length: measured on the same export,
@@ -680,14 +698,25 @@ enum TajweedCalibration {
         let features = try MuaalemFeatures(resourceURL: frontendURL)
         let library = ReciterAudioLibrary()
         let aligner = CTCForcedAligner(blank: 0)
-        let sifa = arguments.trainingSifa
+        let allSifat = PhonemeScript.Sifa.allCases
+        let featureCount = 1 + (2 * arguments.frameContext + 1) * MuaalemFeatures.melBins
 
-        let output = URL(fileURLWithPath: arguments.trainingOutput ?? "frames.csv")
+        let output = URL(fileURLWithPath: arguments.trainingOutput ?? "frames.bin")
         FileManager.default.createFile(atPath: output.path, contents: nil)
         let handle = try FileHandle(forWritingTo: output)
         defer { try? handle.close() }
 
-        print("Training frames for \(sifa)")
+        func write<T>(_ value: T) {
+            var copy = value
+            handle.write(Data(bytes: &copy, count: MemoryLayout<T>.size))
+        }
+        handle.write(Data("IQFR".utf8))
+        write(Int32(1))
+        write(Int32(featureCount))
+        write(Int32(allSifat.count))
+        write(Int32(0))   // frame count, rewritten at the end
+
+        print("Training frames, all \(allSifat.count) ṣifāt in one pass")
         print("  reciter  \(reciter.name)")
         print("  writing  \(output.lastPathComponent)")
 
@@ -708,8 +737,8 @@ enum TajweedCalibration {
                       )
                 else { continue }
 
-                let plane = entry.plane(sifa)
-                guard !plane.isEmpty else { continue }
+                let planes = allSifat.map { entry.plane($0) }
+                guard planes.allSatisfy({ !$0.isEmpty }) else { continue }
 
                 // The band-ratio contrast, as one more feature beside the mel window.
                 //
@@ -762,9 +791,10 @@ enum TajweedCalibration {
                         )
                       }
 
-                for placed in refined where placed.index < plane.count {
-                    let label = Int(plane[placed.index])
-                    guard label > 0 else { continue }
+                for placed in refined where placed.index < planes[0].count {
+                    let labels = planes.map { $0[placed.index] }
+                    // A frame with no expectation for any ṣifah teaches nothing.
+                    guard labels.contains(where: { $0 > 0 }) else { continue }
                     // The middle of where the phoneme was placed, in seconds, converted
                     // to a log-mel row at 10 ms a row.
                     let middle = (placed.start + placed.end) / 2
@@ -784,23 +814,30 @@ enum TajweedCalibration {
                         : 0
 
                     let context = arguments.frameContext
-                    var line = "\(label),\(String(format: "%.3f", contrast))"
+                    var vector: [Float] = [Float(contrast)]
+                    vector.reserveCapacity(featureCount)
                     for offset in -context...context {
                         let index = min(max(row + offset, 0), rows.count - 1)
-                        for value in rows[index] { line += ",\(String(format: "%.4f", value))" }
+                        vector.append(contentsOf: rows[index])
                     }
-                    line += "\n"
-                    handle.write(Data(line.utf8))
+                    guard vector.count == featureCount else { continue }
+
+                    handle.write(Data(labels))
+                    vector.withUnsafeBufferPointer { handle.write(Data(buffer: $0)) }
                     written += 1
-                    byClass[label, default: 0] += 1
+                    byClass[Int(labels[0]), default: 0] += 1
                 }
             }
         }
 
-        print("  \(written) frames")
-        for (label, count) in byClass.sorted(by: { $0.key < $1.key }) {
-            print("    class \(label): \(count)")
-        }
+        // Fill in the count now that it is known.
+        try handle.seek(toOffset: 16)
+        write(Int32(written))
+
+        let megabytes = Double(written * (allSifat.count + featureCount * 4)) / 1e6
+        print("  \(written) frames, \(featureCount) features each, \(IqraEval.format(megabytes, 1)) MB")
+        print("  ghonna classes: " + byClass.sorted { $0.key < $1.key }
+            .map { "\($0.key)→\($0.value)" }.joined(separator: " "))
     }
 
     // MARK: - Nasality, measured from the signal
