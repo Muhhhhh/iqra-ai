@@ -2162,15 +2162,45 @@ extension TajweedCalibration {
     ) async -> (tested: Int, preferMistake: Int, median: Double) {
         // IQRA_FINE=1 doubles the frame rate — see `interleaved`, and its measurement.
         let fine = ProcessInfo.processInfo.environment["IQRA_FINE"] != nil
+        // IQRA_AGREE=1 asks the same question twice, half a frame apart, and takes the
+        // answer only where both agree.
+        //
+        // The same two passes as `interleaved` spent on a different question. A sound that
+        // is genuinely absent should still be absent when the frames are shifted 20 ms; a
+        // verdict that flips under a shift that small was never about the recitation. This
+        // aims at the false flags rather than the resolution, which is where the error
+        // actually is — the qārī floor for ikhfāʾ is 3 in 88 and detection is already 7 of
+        // 7.
+        let agree = ProcessInfo.processInfo.environment["IQRA_AGREE"] != nil
         guard let observed = try? await model.probabilities(for: audio),
               let coarse = observed.probabilities["phonemes"],
               let phonemes = fine ? await interleaved(audio, model: model) : coarse
         else { return (0, 0, 0) }
+
+        // The same probabilities half a frame later, for the agreement test.
+        var shifted: [[Double]]?
+        if agree {
+            let step = Int(AudioChunk.canonicalSampleRate * 0.02)
+            if audio.samples.count > step {
+                let later = AudioChunk(samples: Array(audio.samples[step...]), startTime: 0)
+                shifted = (try? await model.probabilities(for: later))?.probabilities["phonemes"]
+            }
+        }
+
         var supports: [Double] = []
         for position in testablePositions(symbols, rule: rule, idgham: idghamPlane) {
             if let comparison = scorer.compare(
                 probabilities: phonemes, symbols: symbols, at: position, rule: rule
             ) {
+                // Where the two disagree, the reciter is given the benefit of it.
+                if let shifted,
+                   let second = scorer.compare(
+                       probabilities: shifted, symbols: symbols, at: position, rule: rule
+                   ),
+                   (comparison.support < 0) != (second.support < 0) {
+                    supports.append(abs(comparison.support))
+                    continue
+                }
                 supports.append(comparison.support)
                 // One line per instance: the support, the stop that produced the bounce,
                 // and how long the sound actually ran. The duration is here because a
