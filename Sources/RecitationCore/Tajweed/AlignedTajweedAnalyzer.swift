@@ -1242,17 +1242,45 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             else { continue }
 
             let symbols = entry.symbols.map(Int.init)
+            // Where each phoneme fell, so a flag can be attached to the word that was
+            // actually being said at that moment.
+            let placed = (try? aligner.align(probabilities: phonemes, target: symbols)) ?? []
+            let placedByIndex = Dictionary(
+                placed.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first }
+            )
+
             for rule in options.judgedByHypothesis {
             for position in HypothesisScorer.positions(in: symbols, rule: rule) {
                 guard let comparison = scorer.compare(
                     probabilities: phonemes, symbols: symbols, at: position, rule: rule
                 ) else { continue }
 
-                // Whose word this is, and whether the audio bore the word out at all.
-                let wordIndex = position < entry.wordOfPhoneme.count
-                    ? Int(entry.wordOfPhoneme[position]) : 0
-                guard wordIndex < verseWords.count else { continue }
-                let word = verseWords[wordIndex]
+                // Which word was being recited when this sound happened.
+                //
+                // Not `wordOfPhoneme`, which counts the *phonetiser's* words. Those are
+                // not the muṣḥaf's: assimilation merges words across their boundary, so
+                // Al-Kahf 18:5 is twelve phonetic words against sixteen written ones, and
+                // using one index in the other's list put an ikhfāʾ flag on لِـَٔابَآئِهِمْ —
+                // a word with no nūn in it at all. Every note this check has ever produced
+                // was liable to name the wrong word.
+                //
+                // The alignment already says when the phoneme was heard, and the matcher
+                // already says when each word was recited. Where those overlap is the
+                // word, in whichever tokenisation either side prefers.
+                guard let where_ = placedByIndex[position] else { continue }
+                let at = span.start + Double(where_.frames.lowerBound) * observed.frameDuration
+                guard let spoken = segment.words.first(where: {
+                    guard let range = $0.timeRange else { return false }
+                    return range.contains(at)
+                }) ?? segment.words.min(by: {
+                    // Nothing contained it — take the nearest, which happens at a word
+                    // boundary where the two timings disagree by a frame.
+                    abs(($0.timeRange?.lowerBound ?? .infinity) - at)
+                        < abs(($1.timeRange?.lowerBound ?? .infinity) - at)
+                }) else { continue }
+                guard let word = verseWords.first(where: { $0.globalIndex == spoken.targetIndex })
+                    ?? verseWords.first
+                else { continue }
                 // No alignment-confidence gate, unlike madd. That gate asks whether the
                 // audio really holds the word before a duration is read off it, and a
                 // duration read from a bad alignment is arbitrary. This comparison is not:
@@ -1270,13 +1298,13 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 // alike — there is nothing here that a tuned number would buy.
                 guard comparison.support < 0 else { continue }
 
-                let start = segment.audio.startTime + Double(from) / rate
+                let end = at + Double(where_.frames.count) * observed.frameDuration
                 notes.append(
                     TajweedNote(
                         rule: rule,
                         targetIndex: word.globalIndex,
                         reference: reference,
-                        timeRange: start...(start + Double(to - from) / rate),
+                        timeRange: at...max(at, end),
                         confidence: .low,
                         message: Self.hypothesisMessage(for: rule),
                         measurement: .init(
