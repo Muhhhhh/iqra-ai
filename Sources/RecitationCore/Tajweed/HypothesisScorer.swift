@@ -69,6 +69,24 @@ public struct HypothesisScorer: Sendable {
     /// One per run, not per symbol: ikhfāʾ and iqlāb are written two or three times over
     /// for the length of their ghunnah, and each run is one place the reciter either
     /// applied the rule or did not.
+    /// Where idghām falls, which the symbols alone cannot say.
+    ///
+    /// The assimilated letter is an ordinary doubled consonant — a doubled mīm is the same
+    /// whether it came from أُمَّة or from مِن مَّاء — so the positions are read from the text
+    /// at export and carried in their own plane. This takes the first phoneme of each run
+    /// the plane marks.
+    public static func idghamPositions(in plane: [UInt8]) -> [Int] {
+        var found: [Int] = []
+        var index = 0
+        while index < plane.count {
+            var end = index + 1
+            while end < plane.count, plane[end] == plane[index] { end += 1 }
+            if plane[index] != 0 { found.append(index) }
+            index = end
+        }
+        return found
+    }
+
     public static func positions(in symbols: [Int], rule: TajweedRule) -> [Int] {
         let wanted: Int
         switch rule {
@@ -108,6 +126,19 @@ public struct HypothesisScorer: Sendable {
             var without = symbols
             without.remove(at: position)
             return without
+        case .idgham, .idghamBilaGhunnah:
+            // The nūn said rather than merged. Idghām writes the assimilated nūn as a
+            // doubling of the letter that swallowed it, so a reciter who fails to merge
+            // says two sounds where the text asks for one held: a plain ن, then the
+            // letter once. That is the edit.
+            let symbol = symbols[position]
+            var start = position
+            while start > 0, symbols[start - 1] == symbol { start -= 1 }
+            var end = position + 1
+            while end < symbols.count, symbols[end] == symbol { end += 1 }
+            var plain = symbols
+            plain.replaceSubrange(start..<end, with: [Self.plainNun, symbol])
+            return plain
         case .ikhfa, .iqlab:
             // A nūn sākinah said plainly, which is what these two rules forbid.
             //

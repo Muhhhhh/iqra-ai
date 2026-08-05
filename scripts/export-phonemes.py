@@ -15,7 +15,7 @@ vocabulary and can be compared without a translation layer in between.
 Output: Resources/quran-phonemes.bin
 
     "QPH1"                      magic
-    int32   version (1)
+    int32   version (2)
     int32   āyah count
     per āyah:
       uint16 surah, uint16 ayah, uint16 words, uint16 phonemes
@@ -23,6 +23,10 @@ Output: Resources/quran-phonemes.bin
       uint8  word[phonemes]      which word of the āyah this phoneme belongs to
       uint8  sifa[10][phonemes]  one plane per ṣifah, in SIFAT order below;
                                  0 unknown, otherwise the 1-based class
+      uint8  idgham[phonemes]    0 none, 1 with ghunnah, 2 without
+      uint8  madd[phonemes]      0 none, else 1 normal, 2 muttaṣil, 3 munfaṣil,
+                                 4 ʿāriḍ, 5 lāzim — named by the phonetiser, not
+                                 inferred from how many counts were written
 
 Usage:
     .venv/bin/python scripts/export-phonemes.py
@@ -41,6 +45,81 @@ VOCAB_CANDIDATES = [
     Path.home()
     / ".cache/huggingface/hub/models--obadx--muaalem-model-v3_2/snapshots",
 ]
+
+
+
+# Diacritics that never stand as a letter of their own.
+MARKS = "\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655\u0670\u06E1\u0640\u06DF\u06E0\u06E2\u06E5\u06E6\u06EA\u06EB\u06EC\u06ED\u0656\u0657\u0658"
+SHADDA = "\u0651"
+SUKUN = "\u0652"
+TANWIN = "\u064B\u064C\u064D"
+GHUNNAH_LETTERS = "\u064A\u0646\u0645\u0648"          # ي ن م و
+NO_GHUNNAH_LETTERS = "\u0644\u0631"                     # ل ر
+
+
+def idgham_characters(uthmani: str) -> dict:
+    """Uthmani character offsets that an idghām falls on, and which kind.
+
+    In the muṣḥaf idghām *is* a shadda: مِن رَّبِّهِمْ writes the assimilated nūn as a shadda
+    on the ر that swallowed it. What separates it from every other shadda is where it
+    sits — on the **first letter of a word**, with the word before ending in nūn sākinah
+    or tanwīn. أُمَّة carries a shadda mid-word and is nothing of the kind; ٱلرَّحْمَـٰن carries
+    one after ٱل, which is lām shamsiyyah, a different rule with a different sound.
+
+    Determined here rather than from the phonemes because the phonemes cannot tell:
+    assimilation merges the words outright — هُدًۭى مِّن رَّبِّهِمْ is one phonetic word — and a
+    doubled mīm looks the same whether it came from أُمَّة or from مِن مَّاء.
+
+    Returns {character offset: 1 for bi-ghunnah, 2 for bilā ghunnah}.
+    """
+    words = []
+    start = 0
+    for index, character in enumerate(uthmani + " "):
+        if character.isspace():
+            if index > start:
+                words.append((start, uthmani[start:index]))
+            start = index + 1
+
+    found = {}
+    for position, (offset, word) in enumerate(words):
+        if position == 0:
+            continue
+        previous = words[position - 1][1]
+        # The word before has to end in a nūn sākinah or a tanwīn for anything to have
+        # been assimilated. A trailing sukūn or mark is skipped over to find the letter.
+        stripped = previous.rstrip(MARKS)
+        ends_in_nun = stripped.endswith("\u0646")
+        has_tanwin = any(mark in previous[-3:] for mark in TANWIN)
+        if not (ends_in_nun or has_tanwin):
+            continue
+        # The first *letter* of this word, and whether it carries a shadda.
+        letter_at = None
+        for index, character in enumerate(word):
+            if character not in MARKS:
+                letter_at = index
+                break
+        if letter_at is None:
+            continue
+        letter = word[letter_at]
+        following = word[letter_at + 1:letter_at + 3]
+        if SHADDA not in following:
+            continue
+        if letter in GHUNNAH_LETTERS:
+            found[offset + letter_at] = 1
+        elif letter in NO_GHUNNAH_LETTERS:
+            found[offset + letter_at] = 2
+    return found
+
+
+# What the phonetiser calls each madd, in the order the app's own rule enum expects.
+MADD_KINDS = {
+    "NormalMaddRule": 1,
+    "MottaselMaddRule": 2,
+    "MonfaselMaddRule": 3,
+    "AaredMaddRule": 4,
+    "LazemMaddRule": 5,
+    "LazemHarfMaddRule": 5,
+}
 
 
 def find_vocabulary() -> dict:
@@ -117,8 +196,32 @@ def main() -> int:
                 skipped.append((surah, ayah, str(error)[:60]))
                 continue
 
+            uthmani = aya.get().uthmani
+            # Which Uthmani character produced each phoneme, so a fact read off the text
+            # can be attached to the exact sound it became. Idghām can only be found this
+            # way: the phonemes have lost the word boundary it happens at.
+            source = {}
+            for character_index, mapping in enumerate(spaced.mappings):
+                if mapping.deleted or not mapping.pos:
+                    continue
+                for phoneme_index in range(mapping.pos[0], mapping.pos[1]):
+                    source.setdefault(phoneme_index, character_index)
+            idgham_at = idgham_characters(uthmani)
+
+            # The madd the phonetiser itself names, rather than one guessed from length.
+            # Munfaṣil, muttaṣil and ʿāriḍ are all four counts, so nothing downstream can
+            # tell them apart — and the app was calling every one of them wājib muttaṣil.
+            madd_at = {}
+            for mapping in spaced.mappings:
+                for rule in (mapping.tajweed_rules or []):
+                    kind = MADD_KINDS.get(type(rule).__name__)
+                    if kind and mapping.pos:
+                        for phoneme_index in range(mapping.pos[0], mapping.pos[1]):
+                            madd_at[phoneme_index] = kind
+
             symbols, words = [], []
             planes = {name: [] for name, _ in SIFAT}
+            idgham_plane, madd_plane = [], []
             word_index = 0
 
             # `sifat` is one entry per phoneme *group*, and a group spans however many
@@ -133,7 +236,7 @@ def main() -> int:
             # indistinguishable from audio that carries no information.
             group_index = 0
             remaining = len(sifat[0].phonemes) if sifat else 0
-            for character in spaced.phonemes:
+            for phoneme_index, character in enumerate(spaced.phonemes):
                 if character == " ":
                     word_index += 1
                     continue
@@ -144,6 +247,8 @@ def main() -> int:
                     break
                 symbols.append(identifier)
                 words.append(min(word_index, 255))
+                idgham_plane.append(idgham_at.get(source.get(phoneme_index, -1), 0))
+                madd_plane.append(madd_at.get(phoneme_index, 0))
 
                 if remaining == 0 and group_index + 1 < len(sifat):
                     group_index += 1
@@ -156,7 +261,8 @@ def main() -> int:
 
             if not symbols:
                 continue
-            records.append((surah, ayah, word_index + 1, symbols, words, planes))
+            records.append((surah, ayah, word_index + 1, symbols, words, planes,
+                            idgham_plane, madd_plane))
 
         if surah % 20 == 0:
             print(f"    …{surah}/114 surahs, {len(records)} āyāt")
@@ -164,21 +270,25 @@ def main() -> int:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT.open("wb") as handle:
         handle.write(b"QPH1")
-        handle.write(struct.pack("<ii", 1, len(records)))
-        for surah, ayah, words, symbols, wordOf, planes in records:
+        handle.write(struct.pack("<ii", 2, len(records)))
+        for surah, ayah, words, symbols, wordOf, planes, idgham, madd in records:
             handle.write(struct.pack("<HHHH", surah, ayah, words, len(symbols)))
             handle.write(bytes(symbols))
             handle.write(bytes(wordOf))
             for name, _ in SIFAT:
                 handle.write(bytes(planes[name]))
+            handle.write(bytes(idgham))
+            handle.write(bytes(madd))
 
     total = sum(len(r[3]) for r in records)
     nasal = sum(sum(1 for g in r[5]["ghonna"] if g == 1) for r in records)
+    idghams = sum(sum(1 for x in r[6] if x) for r in records)
     echoed = sum(sum(1 for q in r[5]["qalqla"] if q == 1) for r in records)
     size = OUTPUT.stat().st_size
     print(f"==> {len(records)} āyāt, {total} phonemes, {size / 1e6:.1f} MB")
     print(f"    {nasal} phonemes must be nasalised, {echoed} must be echoed")
     print(f"    {len(SIFAT)} ṣifāt exported per phoneme")
+    print(f"    {idghams} phonemes carry an idghām")
     if skipped:
         print(f"==> {len(skipped)} āyāt skipped; first few:")
         for entry in skipped[:5]:

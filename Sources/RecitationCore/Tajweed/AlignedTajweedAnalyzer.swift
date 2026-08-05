@@ -149,6 +149,13 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// and against a reciter breaking each rule on purpose, ikhfāʾ caught 7 of 7 with
         /// none flagged on the clean pass of the same passage.
         ///
+        /// Idghām is on, on a floor and nothing else. Three qurrāʾ over 58 āyāt gave 0 in
+        /// 24, it adds no false flag to the studio set, and it has produced no note on any
+        /// recording made so far. **Nobody has shown it catches anything** — no one has yet
+        /// recited with the nūn deliberately left unmerged. It ships because a check that
+        /// demonstrably stays quiet costs nothing, not because it has been shown to work,
+        /// and that distinction should survive into whatever is claimed for it.
+        ///
         /// **Iqlāb is implemented and left out.** It rides the same mechanism and looked
         /// clean on reference recitation — 1 in 23 — but it is sparse everywhere, about one
         /// āyah in three, so no passage gives it a real floor. Switched on against a page
@@ -238,7 +245,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             judgesGhunnahHold: Bool = false,
             qalqalaShortfall: Double = 0.7,
             judgesQalqalaByDuration: Bool = false,
-            judgedByHypothesis: [TajweedRule] = [.qalqalah, .ikhfa],
+            judgedByHypothesis: [TajweedRule] = [.qalqalah, .ikhfa, .idgham],
             implausibleRatio: ClosedRange<Double> = 0.35...3.5,
             chunkSeconds: Double = .infinity,
             wordSupport: Double = 0.5,
@@ -444,6 +451,9 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             guard !spoken.isEmpty else { continue }
 
             var symbols: [Int] = []
+            /// Which madd each phoneme belongs to, if any — carried alongside the symbols
+            /// because the segment concatenates several āyāt and the tag is per āyah.
+            var maddKinds: [UInt8] = []
             /// For each phoneme: which target word it belongs to, and what it must carry.
             var owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)] = []
 
@@ -457,6 +467,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 let word = words[position]
                 for index in range {
                     symbols.append(Int(entry.symbols[index]))
+                    maddKinds.append(index < entry.maddKind.count ? entry.maddKind[index] : 0)
                     owner.append((word, entry.ghonna[index], entry.qalqala[index]))
                 }
             }
@@ -500,6 +511,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 audio: segment.audio,
                 owner: owner,
                 symbols: symbols,
+                maddKinds: maddKinds,
                 supported: supported,
                 textual: textual,
                 examined: &examined
@@ -636,6 +648,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         audio: AudioChunk,
         owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
         symbols: [Int],
+        maddKinds: [UInt8],
         supported: Set<Int>,
         textual: [String: [TajweedOccurrence]],
         examined: inout Int
@@ -714,7 +727,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         for (position, entry) in measured.enumerated() {
             guard owner.indices.contains(entry.range.lowerBound) else { continue }
             let word = owner[entry.range.lowerBound].word.globalIndex
-            let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
+            let rule = madd(entry.harakat, kind: (entry.range.lowerBound < maddKinds.count ? maddKinds[entry.range.lowerBound] : 0))
             let kind = entry.harakat >= 2 ? "madd" : "vowel"
             byWordAndRule["\(word):\(rule.rawValue):\(kind)", default: []].append(position)
         }
@@ -768,7 +781,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
 
                 let start = Double(entry.startFrame) * 0.04
                 let which = ordinal[position]
-                let rule = madd(entry.harakat, after: entry.range, owner: owner, symbols: symbols)
+                let rule = madd(entry.harakat, kind: (entry.range.lowerBound < maddKinds.count ? maddKinds[entry.range.lowerBound] : 0))
                 // Nothing to disambiguate when the word holds only one of its kind, and
                 // "(the first of 1 in this word)" is worse than saying nothing.
                 let named = (which?.of ?? 1) > 1 ? which : nil
@@ -824,40 +837,6 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     }
 
 
-    /// Which madd this is — which needs more than its length.
-    ///
-    /// Length alone cannot say. The phonetic script is exported with munfaṣil, muttaṣil
-    /// and ʿāriḍ all set to four counts, so 9,705 four-count runs across the muṣḥaf are
-    /// three different rules wearing one number, and naming every one of them wājib
-    /// muttaṣil told the reciter something false about a third of the time.
-    ///
-    /// What separates the two that matter is where the hamza falls. Muttaṣil is a madd
-    /// letter meeting a hamza inside the same word; munfaṣil is one ending a word whose
-    /// neighbour opens with hamza. The phoneme's owning word is already carried here, so
-    /// the distinction costs a comparison.
-    ///
-    /// ʿĀriḍ li's-sukūn has no case in `TajweedRule` and is not separated. It occurs at a
-    /// pause, and the passage's final vowel is skipped before this is reached.
-    private func madd(
-        _ harakat: Int,
-        after range: Range<Int>,
-        owner: [(word: TargetWord, ghonna: UInt8, qalqala: UInt8)],
-        symbols: [Int]
-    ) -> TajweedRule {
-        guard harakat > 2 else { return .maddAsli }
-        guard harakat < 6 else { return .maddLazim }
-
-        let next = range.upperBound
-        guard next < symbols.count, next < owner.count,
-              symbols[next] == Self.hamza,
-              owner.indices.contains(range.lowerBound)
-        else { return .maddWajibMuttasil }
-
-        return owner[next].word.globalIndex == owner[range.lowerBound].word.globalIndex
-            ? .maddWajibMuttasil
-            : .maddJaizMunfasil
-    }
-
     /// How long the loud, sustained part of a stretch lasts, in seconds.
     ///
     /// Measured relative to that stretch's own peak, so it needs no absolute level and is
@@ -891,6 +870,25 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             best = max(best, current)
         }
         return best > 0 ? Double(best) * 0.01 : nil
+    }
+
+    /// Which madd this is, as the phonetiser names it.
+    ///
+    /// Not inferred. Munfaṣil, muttaṣil and ʿāriḍ are all written at four counts, so
+    /// length cannot separate them, and the previous version guessed from where a hamza
+    /// fell — right for the two it could see, silent about ʿāriḍ, which has no case in
+    /// `TajweedRule` and was called wājib muttaṣil along with everything else.
+    ///
+    /// `quran_transcript` tags each one, and `export-phonemes.py` now carries the tag
+    /// through, so this is a lookup.
+    private func madd(_ harakat: Int, kind: UInt8) -> TajweedRule {
+        switch kind {
+        case 2: return .maddWajibMuttasil
+        case 3: return .maddJaizMunfasil
+        case 5: return .maddLazim
+        case 4: return .maddAsli   // ʿāriḍ has no case of its own; named for its length
+        default: return harakat >= 6 ? .maddLazim : .maddAsli
+        }
     }
 
     /// Runs of consecutive phonemes that must all be nasalised — one ghunnah each.
@@ -1227,8 +1225,11 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         for (reference, span) in spans.sorted(by: { $0.key < $1.key }) {
             guard let entry = script[reference],
                   let verseWords = words[reference],
-                  options.judgedByHypothesis.contains(where: {
-                      !HypothesisScorer.positions(in: entry.symbols.map(Int.init), rule: $0).isEmpty
+                  options.judgedByHypothesis.contains(where: { rule in
+                      (rule == .idgham || rule == .idghamBilaGhunnah)
+                          ? entry.idgham.contains(where: { $0 != 0 })
+                          : !HypothesisScorer.positions(
+                                in: entry.symbols.map(Int.init), rule: rule).isEmpty
                   })
             else { continue }
 
@@ -1250,7 +1251,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             )
 
             for rule in options.judgedByHypothesis {
-            for position in HypothesisScorer.positions(in: symbols, rule: rule) {
+            let places = (rule == .idgham || rule == .idghamBilaGhunnah)
+                ? HypothesisScorer.idghamPositions(in: entry.idgham)
+                : HypothesisScorer.positions(in: symbols, rule: rule)
+            for position in places {
                 guard let comparison = scorer.compare(
                     probabilities: phonemes, symbols: symbols, at: position, rule: rule
                 ) else { continue }
@@ -1331,6 +1335,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             return "This nūn sounds clear — it should be hidden into the letter that follows."
         case .iqlab:
             return "This nūn should sound like a mīm here, before the bāʾ."
+        case .idgham, .idghamBilaGhunnah:
+            return "This nūn sounds separate — it should merge into the letter that follows."
         default:
             return "This qalqalah sounds swallowed — the letter should bounce before the next sound."
         }

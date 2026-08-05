@@ -2057,7 +2057,10 @@ extension TajweedCalibration {
     /// For qalqalah that is the echo symbol. For madd it is the first symbol of a run
     /// longer than two counts — below three the app does not judge shortness at all, so
     /// testing them would measure a check that never runs.
-    static func testablePositions(_ symbols: [Int], rule: TajweedRule) -> [Int] {
+    static func testablePositions(_ symbols: [Int], rule: TajweedRule, idgham: [UInt8] = []) -> [Int] {
+        if rule == .idgham || rule == .idghamBilaGhunnah {
+            return HypothesisScorer.idghamPositions(in: idgham)
+        }
         if rule == .qalqalah {
             return symbols.indices.filter { symbols[$0] == AlignedTajweedAnalyzer.qalqalaEcho }
         }
@@ -2126,6 +2129,7 @@ extension TajweedCalibration {
     static func hypothesisRate(
         audio: AudioChunk,
         symbols: [Int],
+        idghamPlane: [UInt8] = [],
         rule: TajweedRule = .qalqalah,
         model: MuaalemTajweedAnalyzer,
         scorer: HypothesisScorer
@@ -2136,7 +2140,7 @@ extension TajweedCalibration {
               let phonemes = fine ? await interleaved(audio, model: model) : coarse
         else { return (0, 0, 0) }
         var supports: [Double] = []
-        for position in testablePositions(symbols, rule: rule) {
+        for position in testablePositions(symbols, rule: rule, idgham: idghamPlane) {
             if let comparison = scorer.compare(
                 probabilities: phonemes, symbols: symbols, at: position, rule: rule
             ) {
@@ -2200,6 +2204,7 @@ extension TajweedCalibration {
                 let result = await hypothesisRate(
                     audio: audio,
                     symbols: entry.symbols.map(Int.init),
+                    idghamPlane: entry.idgham,
                     rule: arguments.hypothesisRule,
                     model: model,
                     scorer: scorer

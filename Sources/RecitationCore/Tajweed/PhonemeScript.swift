@@ -46,6 +46,21 @@ public struct PhonemeScript: Sendable {
         /// material for training a detector that *hears* an attribute instead of
         /// predicting it from the letters around it.
         public let sifat: [[UInt8]]
+        /// 1 idghām with ghunnah, 2 without, 0 none.
+        ///
+        /// Read from the Uthmani text at export, not from the phonemes, because the
+        /// phonemes cannot carry it: assimilation merges the words it happens at — هُدًۭى
+        /// مِّن رَّبِّهِمْ is one phonetic word — and a doubled mīm looks identical whether it
+        /// came from أُمَّة or from مِن مَّاء. In the muṣḥaf it is a shadda on the first letter
+        /// of a word whose predecessor ended in nūn sākinah or tanwīn, which is exact.
+        public let idgham: [UInt8]
+        /// Which madd, named by the phonetiser: 1 normal, 2 muttaṣil, 3 munfaṣil,
+        /// 4 ʿāriḍ, 5 lāzim. 0 where the phoneme is not part of one.
+        ///
+        /// Munfaṣil, muttaṣil and ʿāriḍ are all written at four counts, so nothing
+        /// downstream can tell them apart by length — and the app called every one of
+        /// them wājib muttaṣil until this arrived.
+        public let maddKind: [UInt8]
         public let wordCount: Int
 
         /// 1 must be nasalised, 2 must not, 0 no expectation.
@@ -98,7 +113,7 @@ public struct PhonemeScript: Sendable {
         }
 
         let version = try int32()
-        guard version == 1 else { throw LoadError.malformed("version \(version)") }
+        guard version == 2 else { throw LoadError.malformed("version \(version)") }
         let count = try int32()
 
         var loaded: [VerseReference: Entry] = [:]
@@ -113,10 +128,14 @@ public struct PhonemeScript: Sendable {
             var planes: [[UInt8]] = []
             planes.reserveCapacity(Sifa.allCases.count)
             for _ in Sifa.allCases { planes.append(try bytes(phonemes)) }
+            let idgham = try bytes(phonemes)
+            let maddKind = try bytes(phonemes)
             let entry = Entry(
                 symbols: symbols,
                 wordOfPhoneme: wordOf,
                 sifat: planes,
+                idgham: idgham,
+                maddKind: maddKind,
                 wordCount: words
             )
             loaded[VerseReference(surah: surah, ayah: ayah)] = entry
