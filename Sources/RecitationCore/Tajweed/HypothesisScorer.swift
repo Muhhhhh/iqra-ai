@@ -118,27 +118,43 @@ public struct HypothesisScorer: Sendable {
         at position: Int,
         rule: TajweedRule
     ) -> [Int]? {
+        guard let edit = edit(symbols, at: position, rule: rule) else { return nil }
+        var broken = symbols
+        broken.replaceSubrange(edit.range, with: edit.replacement)
+        return broken
+    }
+
+    /// The edit itself: which symbols the mistake replaces, and with what.
+    ///
+    /// Returned as an edit rather than a whole rewritten sequence so the comparison can be
+    /// made where the two readings actually differ. A violation touches two or three
+    /// symbols; aligning a rewritten āyah end to end for each one was most of what made
+    /// analysis slow.
+    public static func edit(
+        _ symbols: [Int],
+        at position: Int,
+        rule: TajweedRule
+    ) -> (range: Range<Int>, replacement: [Int])? {
         guard symbols.indices.contains(position) else { return nil }
+        func run(of symbol: Int) -> Range<Int> {
+            var start = position
+            while start > 0, symbols[start - 1] == symbol { start -= 1 }
+            var end = position + 1
+            while end < symbols.count, symbols[end] == symbol { end += 1 }
+            return start..<end
+        }
         switch rule {
         case .qalqalah:
             // The bounce simply not made: the stop released straight into what follows.
             guard symbols[position] == AlignedTajweedAnalyzer.qalqalaEcho else { return nil }
-            var without = symbols
-            without.remove(at: position)
-            return without
+            return (position..<(position + 1), [])
         case .idgham, .idghamBilaGhunnah:
             // The nūn said rather than merged. Idghām writes the assimilated nūn as a
             // doubling of the letter that swallowed it, so a reciter who fails to merge
             // says two sounds where the text asks for one held: a plain ن, then the
             // letter once. That is the edit.
             let symbol = symbols[position]
-            var start = position
-            while start > 0, symbols[start - 1] == symbol { start -= 1 }
-            var end = position + 1
-            while end < symbols.count, symbols[end] == symbol { end += 1 }
-            var plain = symbols
-            plain.replaceSubrange(start..<end, with: [Self.plainNun, symbol])
-            return plain
+            return (run(of: symbol), [Self.plainNun, symbol])
         case .ikhfa, .iqlab:
             // A nūn sākinah said plainly, which is what these two rules forbid.
             //
@@ -149,25 +165,14 @@ public struct HypothesisScorer: Sendable {
             // the violated reading is the whole run swapped for a single ن.
             let symbol = symbols[position]
             guard symbol == Self.ikhfaNun || symbol == Self.iqlabNun else { return nil }
-            var start = position
-            while start > 0, symbols[start - 1] == symbol { start -= 1 }
-            var end = position + 1
-            while end < symbols.count, symbols[end] == symbol { end += 1 }
-            var plain = symbols
-            plain.replaceSubrange(start..<end, with: [Self.plainNun])
-            return plain
+            return (run(of: symbol), [Self.plainNun])
         case _ where rule.isMadd:
             // The elongation cut to a single count, which is what rushing one sounds
             // like — the vowel is there, its length is not.
             let symbol = symbols[position]
-            var start = position
-            while start > 0, symbols[start - 1] == symbol { start -= 1 }
-            var end = position + 1
-            while end < symbols.count, symbols[end] == symbol { end += 1 }
-            guard end - start >= 2 else { return nil }
-            var shortened = symbols
-            shortened.removeSubrange((start + 1)..<end)
-            return shortened
+            let span = run(of: symbol)
+            guard span.count >= 2 else { return nil }
+            return (span, [symbol])
         default:
             return nil
         }
@@ -184,12 +189,12 @@ public struct HypothesisScorer: Sendable {
     /// Restricted to the frames around the symbol in question, the comparison answers
     /// about that sound and nothing else.
     private func score(
-        _ alignment: CTCForcedAligner.Alignment,
+        _ spans: [CTCForcedAligner.Span],
         probabilities: [[Double]],
         over frames: Range<Int>
     ) -> Double {
         var symbolAt = [Int](repeating: blank, count: probabilities.count)
-        for span in alignment.spans {
+        for span in spans {
             for frame in span.frames where frame < symbolAt.count { symbolAt[frame] = span.symbol }
         }
         var total = 0.0
@@ -206,9 +211,11 @@ public struct HypothesisScorer: Sendable {
 
     /// Score the text's reading against a violated one, over the same audio.
     ///
-    /// Both are aligned over the whole āyah — the path has to be found in context — but
-    /// only the frames around the disputed sound are compared, with a little air either
-    /// side so a boundary is not cut through.
+    /// Only the neighbourhood of the edit is re-aligned. A violation touches two or three
+    /// symbols and the path either side of it is the correct one's, so re-deriving a whole
+    /// āyah for each question was work thrown away — and there are several questions in
+    /// most āyāt. The margin is generous enough that the sub-path settles well before it
+    /// reaches the frames being scored.
     public func compare(
         probabilities: [[Double]],
         symbols: [Int],
@@ -216,33 +223,66 @@ public struct HypothesisScorer: Sendable {
         rule: TajweedRule,
         correct known: CTCForcedAligner.Alignment? = nil
     ) -> Comparison? {
-        // The correct reading is the same for every question asked of an āyah, so it is
-        // aligned once and passed in. Re-deriving it per instance was most of the cost:
-        // an āyah with six rules in it paid for thirteen Viterbi passes over the whole
-        // sequence where seven do, and the caller had already computed one of those to
-        // find where the phonemes fell.
-        guard let broken = Self.violate(symbols, at: position, rule: rule),
+        guard let edit = Self.edit(symbols, at: position, rule: rule),
               let correct = known
-                  ?? (try? aligner.scored(probabilities: probabilities, target: symbols)),
-              let wrong = try? aligner.scored(probabilities: probabilities, target: broken)
+                  ?? (try? aligner.scored(probabilities: probabilities, target: symbols))
         else { return nil }
 
-        // The window: from the symbol before the disputed one to the symbol after it.
-        guard let here = correct.spans.first(where: { $0.index == position }) else { return nil }
+        let byIndex = Dictionary(
+            correct.spans.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+        guard let here = byIndex[position] else { return nil }
+
+        // The frames to score: the disputed sound plus `context` symbols either side.
         let before = correct.spans.last { $0.index <= position - context }
         let after = correct.spans.first { $0.index >= position + context }
-        let lower = context == 0 ? here.frames.lowerBound
+        let windowLower = context == 0 ? here.frames.lowerBound
             : (before?.frames.lowerBound ?? here.frames.lowerBound)
-        let upper = context == 0 ? here.frames.upperBound
+        let windowUpper = context == 0 ? here.frames.upperBound
             : (after?.frames.upperBound ?? here.frames.upperBound)
-        guard upper > lower else { return nil }
-        let window = lower..<upper
+        guard windowUpper > windowLower else { return nil }
+        let window = windowLower..<windowUpper
+
+        // The stretch to re-align: wider again, so the sub-path is settled by the time it
+        // reaches the window.
+        let margin = 4
+        let low = max(0, edit.range.lowerBound - margin)
+        let high = min(symbols.count, edit.range.upperBound + margin)
+        let firstFrame = byIndex[low].map(\.frames.lowerBound) ?? 0
+        let lastFrame = byIndex[high - 1].map(\.frames.upperBound) ?? probabilities.count
+        let frames = max(0, firstFrame)..<min(probabilities.count, max(lastFrame, firstFrame + 1))
+        guard frames.count > 1, window.lowerBound >= frames.lowerBound,
+              window.upperBound <= frames.upperBound
+        else { return nil }
+
+        var piece = Array(symbols[low..<high])
+        piece.replaceSubrange(
+            (edit.range.lowerBound - low)..<(edit.range.upperBound - low),
+            with: edit.replacement
+        )
+        guard !piece.isEmpty,
+              let broken = try? aligner.scored(
+                  probabilities: Array(probabilities[frames]), target: piece
+              )
+        else { return nil }
+
+        // The sub-alignment's frames are relative to `frames.lowerBound`.
+        let offset = frames.lowerBound
+        let shifted = broken.spans.map { span in
+            let moved = (span.frames.lowerBound + offset)..<(span.frames.upperBound + offset)
+            return CTCForcedAligner.Span(
+                index: span.index,
+                symbol: span.symbol,
+                frames: moved,
+                confidence: span.confidence
+            )
+        }
 
         return Comparison(
             position: position,
             rule: rule,
-            expected: score(correct, probabilities: probabilities, over: window),
-            violated: score(wrong, probabilities: probabilities, over: window)
+            expected: score(correct.spans, probabilities: probabilities, over: window),
+            violated: score(shifted, probabilities: probabilities, over: window)
         )
     }
 }

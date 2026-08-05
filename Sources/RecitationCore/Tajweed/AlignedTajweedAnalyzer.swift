@@ -431,7 +431,22 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         var required = 0
         var examined = 0
 
-        for segment in segments.flatMap({ perVerse($0) }) {
+        // One model pass per āyah, not per segment.
+        //
+        // Slicing a segment's probabilities per āyah instead is a quarter of the inference
+        // and was tried: 13.6s to 10.1s on a recorded page. It also disagreed with itself.
+        // The encoder sees context, so three seconds analysed inside twenty are not the
+        // same three seconds analysed alone, and on a page recited properly the cheaper
+        // route invented an ikhfāʾ flag the dearer one does not. Every figure this app
+        // rests on was measured the expensive way; a quarter of the cost is not worth an
+        // accusation.
+        //
+        // Running those passes concurrently does not help: the pronunciation model is an
+        // actor, so calls to it serialise however they are dispatched. Measured at 13.5s
+        // against 14.0s for the task-group version, which is noise plus the machinery.
+        let verses = segments.flatMap { perVerse($0) }
+
+        for segment in verses {
             // Only words this segment actually carries, in order — aligning an āyah's
             // whole phoneme sequence to audio holding half of it would misplace
             // everything after the join.
