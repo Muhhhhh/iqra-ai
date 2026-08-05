@@ -10,7 +10,16 @@ public protocol VoiceActivityDetector: Sendable {
     /// Flush whatever speech is buffered — call when capture stops so the last
     /// segment isn't lost.
     func flush() async -> AudioChunk?
+    /// The speech gathered so far, without closing it. Used for provisional readings.
+    ///
+    /// Defaulted to nothing: a detector that keeps no buffer has nothing to show early,
+    /// and the pipeline simply skips the provisional pass for it.
+    func pending() async -> AudioChunk?
     func reset() async
+}
+
+public extension VoiceActivityDetector {
+    func pending() async -> AudioChunk? { nil }
 }
 
 /// Fallback VAD: RMS threshold with hangover, no model.
@@ -43,6 +52,8 @@ public actor EnergyVoiceActivityDetector: VoiceActivityDetector {
         self.options = options
         self.assembler = SpeechSegmentAssembler(options: options.segmentation)
     }
+
+    public func pending() async -> AudioChunk? { assembler.pending }
 
     public func process(_ frame: AudioChunk) async -> [AudioChunk] {
         assembler.consume(frame, isSpeech: frame.rms >= options.speechThreshold)

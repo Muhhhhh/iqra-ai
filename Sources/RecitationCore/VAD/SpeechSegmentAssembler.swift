@@ -112,6 +112,15 @@ public struct SpeechSegmentAssembler {
         return [current]
     }
 
+    /// The speech gathered so far, without closing anything.
+    ///
+    /// For showing the reciter where they are before the phrase ends. A segment closes at
+    /// a pause, so the median wait for a verdict is seven seconds of recitation plus the
+    /// silence that ends it — accurate, and far too late to feel like the app is
+    /// listening. This lets a provisional reading be taken off the audio in hand while the
+    /// real one still waits for the whole phrase.
+    public var pending: AudioChunk? { buffer }
+
     /// Emit whatever speech is still buffered. Call when capture stops so the final
     /// segment isn't lost.
     public mutating func flush() -> AudioChunk? {

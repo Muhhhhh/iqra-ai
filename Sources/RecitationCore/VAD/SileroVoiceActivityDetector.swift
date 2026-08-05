@@ -169,6 +169,8 @@ public actor SileroVoiceActivityDetector: VoiceActivityDetector {
         return emitted
     }
 
+    public func pending() async -> AudioChunk? { assembler.pending }
+
     public func flush() async -> AudioChunk? {
         // Whatever is left in `pending` is shorter than one window (<32 ms) and cannot
         // be analysed, so it is dropped rather than guessed at.

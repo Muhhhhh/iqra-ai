@@ -56,6 +56,9 @@ public actor RecitationPipeline {
     private var clearedByAudio: Set<Int> = []
     /// Lifts quiet recitation before the voice detector sees it — see `AutomaticGain`.
     private var gain = AutomaticGain()
+    /// Session time of the last provisional reading, so they are taken at a steady rate
+    /// rather than on every frame.
+    private var lastProvisional: TimeInterval = -.infinity
     private var state: PipelineState = .idle
     private var captureTask: Task<Void, Never>?
     private var continuation: AsyncStream<PipelineEvent>.Continuation?
@@ -97,6 +100,7 @@ public actor RecitationPipeline {
         tajweedNotes = []
         tajweedCoverage = .none
         clearedByAudio = []
+        lastProvisional = -.infinity
         gain.reset()
         await components.vad.reset()
         await components.recorder?.begin()
@@ -215,10 +219,65 @@ public actor RecitationPipeline {
         emit(.level(rms: min(1.0, frame.rms * 12), peak: frame.peak))
         await components.recorder?.append(frame)
         let lifted = gain.apply(to: frame)
-        for segment in await components.vad.process(lifted) {
+        let closed = await components.vad.process(lifted)
+        for segment in closed {
             await process(segment: segment)
         }
+        if closed.isEmpty {
+            await showProgress(now: frame.endTime)
+        }
     }
+
+    /// Highlight what has been recited so far, without waiting for the phrase to end.
+    ///
+    /// A segment closes at a pause, so the considered verdict arrives a median seven
+    /// seconds of recitation later — accurate, and much too late to feel like anything is
+    /// listening. This transcribes the audio in hand and shows how far the reciter has
+    /// got, then throws the result away: nothing here is stored, so the real pass still
+    /// sees the whole phrase and none of this can affect what it concludes.
+    ///
+    /// **Progress only, never a mistake.** A partial phrase is missing the words that
+    /// would explain it, so every doubt it raises is one the full phrase might answer —
+    /// and this app does not accuse on evidence it knows to be incomplete. Anything short
+    /// of `correct` is shown as not yet reached.
+    private func showProgress(now: TimeInterval) async {
+        guard let target,
+              now - lastProvisional >= Self.provisionalInterval,
+              let pending = await components.vad.pending(),
+              pending.duration >= 1.0
+        else { return }
+        lastProvisional = now
+
+        guard let transcription = try? await components.recognizer.transcribe(pending),
+              !transcription.tokens.isEmpty
+        else { return }
+
+        let alignment = components.aligner.align(
+            heard: heardTokens + transcription.tokens,
+            against: target,
+            isFinal: false
+        )
+        emit(.alignment(cleared(AlignmentResult(
+            words: alignment.words.map { word in
+                word.status == .correct ? word : WordEvaluation(
+                    targetIndex: word.targetIndex,
+                    reference: word.reference,
+                    expectedText: word.expectedText,
+                    status: .notYetRecited,
+                    timeRange: word.timeRange,
+                    recognizerConfidence: word.recognizerConfidence
+                )
+            },
+            // No insertions either. A word the reciter has not reached yet looks exactly
+            // like one they added, until the rest of the phrase arrives.
+            insertions: [],
+            isFinal: false
+        ))))
+    }
+
+    /// How often a provisional reading is taken. Every frame would spend the whole budget
+    /// on transcription and starve the real pass; this is often enough to read as live.
+    private static let provisionalInterval: TimeInterval = 1.2
 
     private func process(segment: AudioChunk) async {
         guard let target else { return }

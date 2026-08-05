@@ -332,3 +332,74 @@ struct RetargetTests {
         #expect(forSecondPage.allSatisfy { $0.mistakeCount == 0 })
     }
 }
+
+@Suite("Provisional readings")
+struct ProvisionalReadingTests {
+
+    /// A detector that never closes a segment, so only provisional readings can be seen.
+    private actor NeverClosing: VoiceActivityDetector {
+        private var held: AudioChunk?
+        func process(_ frame: AudioChunk) async -> [AudioChunk] {
+            held = held.map { $0.appending(frame) } ?? frame
+            return []
+        }
+        func pending() async -> AudioChunk? { held }
+        func flush() async -> AudioChunk? { nil }
+        func reset() async { held = nil }
+    }
+
+    @Test("Progress is shown before the phrase ends")
+    func showsProgressEarly() async throws {
+        let target = RecitationTarget(verses: [
+            Verse(reference: VerseReference(surah: 112, ayah: 1), text: "قُلْ هُوَ ٱللَّهُ أَحَدٌ")
+        ])
+        let pipeline = RecitationPipeline(components: PipelineComponents(
+            capture: ScriptedAudioCapture.silence(chunkCount: 8, chunkDuration: 1.0, pacing: .milliseconds(1)),
+            vad: NeverClosing(),
+            recognizer: ScriptedSpeechRecognizer(transcript: "قل هو", segmentCount: 1),
+            aligner: TokenAligner()
+        ))
+
+        let events = await pipeline.events()
+        await pipeline.start(target: target)
+        var alignments: [AlignmentResult] = []
+        for await event in events {
+            if case .alignment(let result) = event { alignments.append(result) }
+            if alignments.count >= 2 { break }
+        }
+        await pipeline.stop()
+
+        // The segment never closed, so anything seen here came from a provisional pass.
+        #expect(!alignments.isEmpty)
+    }
+
+    @Test("A provisional reading never reports a mistake")
+    func neverAccuses() async throws {
+        // The reciter has said two of four words. Without the rest of the phrase the last
+        // two look skipped — which is exactly the accusation a partial reading must not
+        // make, because the words that would explain it have not been said yet.
+        let target = RecitationTarget(verses: [
+            Verse(reference: VerseReference(surah: 112, ayah: 1), text: "قُلْ هُوَ ٱللَّهُ أَحَدٌ")
+        ])
+        let pipeline = RecitationPipeline(components: PipelineComponents(
+            capture: ScriptedAudioCapture.silence(chunkCount: 8, chunkDuration: 1.0, pacing: .milliseconds(1)),
+            vad: NeverClosing(),
+            recognizer: ScriptedSpeechRecognizer(transcript: "قل زيد", segmentCount: 1),
+            aligner: TokenAligner()
+        ))
+
+        let events = await pipeline.events()
+        await pipeline.start(target: target)
+        var seen: [AlignmentResult] = []
+        for await event in events {
+            if case .alignment(let result) = event { seen.append(result) }
+            if seen.count >= 2 { break }
+        }
+        await pipeline.stop()
+
+        for result in seen {
+            #expect(result.mistakeCount == 0, "a provisional reading accused the reciter")
+            #expect(result.insertions.isEmpty, "a provisional reading invented a word")
+        }
+    }
+}
