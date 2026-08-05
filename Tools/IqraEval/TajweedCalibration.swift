@@ -2061,6 +2061,21 @@ extension TajweedCalibration {
         if rule == .qalqalah {
             return symbols.indices.filter { symbols[$0] == AlignedTajweedAnalyzer.qalqalaEcho }
         }
+        if rule == .ikhfa || rule == .iqlab {
+            // One position per run, not per symbol: the rule is written two or three times
+            // over for the length of its ghunnah, and each run is one place the reciter
+            // either applied it or did not.
+            let wanted = rule == .ikhfa ? HypothesisScorer.ikhfaNun : HypothesisScorer.iqlabNun
+            var positions: [Int] = []
+            var index = 0
+            while index < symbols.count {
+                var end = index + 1
+                while end < symbols.count, symbols[end] == symbols[index] { end += 1 }
+                if symbols[index] == wanted { positions.append(index) }
+                index = end
+            }
+            return positions
+        }
         var positions: [Int] = []
         var index = 0
         while index < symbols.count {
@@ -2137,7 +2152,7 @@ extension TajweedCalibration {
                 let result = await hypothesisRate(
                     audio: audio,
                     symbols: entry.symbols.map(Int.init),
-                    rule: arguments.judgeSifat ? .maddWajibMuttasil : .qalqalah,
+                    rule: arguments.hypothesisRule,
                     model: model,
                     scorer: scorer
                 )

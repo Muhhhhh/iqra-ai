@@ -983,6 +983,8 @@ struct Arguments {
     var tajweedNegatives = false
     var replayPath: String?
     var hypothesisTest = false
+    /// Which rule `--hypothesis` asks about.
+    var hypothesisRule: TajweedRule = .qalqalah
     var maddShortfall: Double?
     /// Remove the whole word rather than just the spike.
     var tajweedRemoveWholeWord = false
@@ -1064,6 +1066,8 @@ struct Arguments {
             case "--tajweed-negatives": tajweedNegatives = true
             case "--replay": replayPath = next()
             case "--hypothesis": hypothesisTest = true
+            case "--rule":
+                hypothesisRule = next().flatMap { TajweedRule(rawValue: $0) } ?? .qalqalah
             case "--madd-shortfall": maddShortfall = next().flatMap { Double($0) }
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true

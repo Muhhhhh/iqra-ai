@@ -44,6 +44,13 @@ public struct HypothesisScorer: Sendable {
         public var support: Double { expected - violated }
     }
 
+    /// ں — the hidden nūn of ikhfāʾ, as the phonetiser writes it.
+    public static let ikhfaNun = 39
+    /// ۾ — the nūn turned to a mīm before bāʾ, in iqlāb.
+    public static let iqlabNun = 40
+    /// ن said plainly, which is the mistake both rules describe.
+    public static let plainNun = 25
+
     private let aligner: CTCForcedAligner
 
     public init(aligner: CTCForcedAligner = CTCForcedAligner(blank: 0)) {
@@ -70,6 +77,23 @@ public struct HypothesisScorer: Sendable {
             var without = symbols
             without.remove(at: position)
             return without
+        case .ikhfa, .iqlab:
+            // A nūn sākinah said plainly, which is what these two rules forbid.
+            //
+            // The phonetiser gives each its own symbol — ں for ikhfāʾ, ۾ for iqlāb — and
+            // writes it two or three times over for the ghunnah's length. Reciting the
+            // rule wrongly does not shorten that sound, it replaces it: the reciter says a
+            // clear nūn where the text asks for a hidden one, or for a mīm before bāʾ. So
+            // the violated reading is the whole run swapped for a single ن.
+            let symbol = symbols[position]
+            guard symbol == Self.ikhfaNun || symbol == Self.iqlabNun else { return nil }
+            var start = position
+            while start > 0, symbols[start - 1] == symbol { start -= 1 }
+            var end = position + 1
+            while end < symbols.count, symbols[end] == symbol { end += 1 }
+            var plain = symbols
+            plain.replaceSubrange(start..<end, with: [Self.plainNun])
+            return plain
         case _ where rule.isMadd:
             // The elongation cut to a single count, which is what rushing one sounds
             // like — the vowel is there, its length is not.
