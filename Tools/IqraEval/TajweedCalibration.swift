@@ -1332,6 +1332,8 @@ enum TajweedCalibration {
             script: script,
             options: .init(
                 maddShortfall: arguments.maddShortfall ?? AlignedTajweedAnalyzer.Options.default.maddShortfall,
+                judgesGhunnahHold: arguments.ghunnahHold,
+                flagsLongGhunnah: arguments.invertGhunnah,
                 judgesSifat: arguments.judgeSifat
             )
         )

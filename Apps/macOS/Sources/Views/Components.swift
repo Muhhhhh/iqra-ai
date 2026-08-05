@@ -14,10 +14,18 @@ struct LevelMeter: View {
     /// happen to the audio, and it is otherwise invisible.
     var isClipping: Bool = false
 
-    /// Newest last. Sized for roughly two seconds at the rate levels arrive.
+    /// Newest last, kept generously so a wide window has enough to fill.
     @State private var history: [Float] = []
 
-    private static let barCount = 44
+    /// Points per bar.
+    ///
+    /// The count follows from the width rather than the other way round, so the trace
+    /// keeps its density at any size. A fixed count stretched each bar as the window grew,
+    /// turning a fine waveform into a row of slabs. 11.7 is the spacing the meter had at
+    /// the width it was tuned on; lower is denser.
+    private static let barPitch: CGFloat = 11.7
+    /// Enough history for a very wide window; the display takes the last `count` of it.
+    private static let historyLimit = 400
 
     private var tint: Color {
         if isClipping { return .red }
@@ -26,14 +34,16 @@ struct LevelMeter: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let spacing = max(1, geometry.size.width / CGFloat(Self.barCount) * 0.34)
-            let barWidth = max(1, (geometry.size.width - spacing * CGFloat(Self.barCount - 1)) / CGFloat(Self.barCount))
+            let count = max(8, Int(geometry.size.width / Self.barPitch))
+            let spacing = max(1, geometry.size.width / CGFloat(count) * 0.34)
+            let barWidth = max(1, (geometry.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
+            let shown = Array(history.suffix(count))
             HStack(alignment: .center, spacing: spacing) {
-                ForEach(0..<Self.barCount, id: \.self) { index in
+                ForEach(0..<count, id: \.self) { index in
                     // Left-pad with silence until enough has been heard to fill the view,
                     // so the trace grows in from the right rather than stretching.
-                    let padding = Self.barCount - history.count
-                    let value = index < padding ? 0 : history[index - padding]
+                    let padding = count - shown.count
+                    let value = index < padding ? 0 : shown[index - padding]
                     Capsule()
                         .fill(tint.opacity(value > 0.001 ? 1 : 0.35))
                         .frame(
@@ -48,7 +58,9 @@ struct LevelMeter: View {
         }
         .onChange(of: level, initial: true) { _, value in
             history.append(min(max(value, 0), 1))
-            if history.count > Self.barCount { history.removeFirst(history.count - Self.barCount) }
+            if history.count > Self.historyLimit {
+                history.removeFirst(history.count - Self.historyLimit)
+            }
         }
         .onChange(of: isActive) { _, running in
             if !running { history.removeAll() }

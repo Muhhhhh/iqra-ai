@@ -218,7 +218,7 @@ struct ReviewPanel: View {
             Label("Word-level matching only", systemImage: "info.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Pronunciation and tajweed are not assessed. Check with a teacher.")
+            Text("Pronunciation and tajweed are not fully assessed. Check with a teacher.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)

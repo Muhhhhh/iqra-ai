@@ -120,6 +120,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// would be by following letter, and there are too few of each in a session to
         /// build a median from. Left available, and off.
         public var judgesGhunnahHold: Bool
+        /// Read the ghunnah hold the other way round: flag the long ones, not the short.
+        public var flagsLongGhunnah: Bool
         /// Judge qalqalah by timing the echo rather than by asking which reading the audio
         /// supports.
         ///
@@ -243,6 +245,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             flagsOverlongVowels: Bool = false,
             ghunnahShortfall: Double = 0.7,
             judgesGhunnahHold: Bool = false,
+            flagsLongGhunnah: Bool = false,
             qalqalaShortfall: Double = 0.7,
             judgesQalqalaByDuration: Bool = false,
             judgedByHypothesis: [TajweedRule] = [.qalqalah, .ikhfa, .idgham],
@@ -258,6 +261,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.flagsOverlongVowels = flagsOverlongVowels
             self.ghunnahShortfall = ghunnahShortfall
             self.judgesGhunnahHold = judgesGhunnahHold
+            self.flagsLongGhunnah = flagsLongGhunnah
             self.qalqalaShortfall = qalqalaShortfall
             self.judgesQalqalaByDuration = judgesQalqalaByDuration
             self.judgedByHypothesis = judgedByHypothesis
@@ -975,7 +979,17 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 let word = owner[entry.range.lowerBound].word
                 guard supported.contains(word.globalIndex) else { continue }
                 examined += 1
-                guard entry.seconds < expected * options.ghunnahShortfall else { continue }
+                // Flagged short, or flagged long — the same measurement read either way.
+                //
+                // Reading it as written caught 0 of 27 rushed ghunnahs while questioning 57
+                // correct ones, and 0 of 27 is worse than chance: a check flagging that
+                // often should have hit some of them by accident. Missing every one means
+                // the measurement runs *opposite* to the mistake, which is a finding about
+                // the measurement rather than about ghunnah, and worth testing directly.
+                let held = entry.seconds
+                let short = held < expected * options.ghunnahShortfall
+                let long = held > expected / options.ghunnahShortfall
+                guard options.flagsLongGhunnah ? long : short else { continue }
                 let start = Double(entry.startFrame) * 0.04
                 notes.append(
                     TajweedNote(

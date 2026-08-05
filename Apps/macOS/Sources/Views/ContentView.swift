@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var selectedWord: Int?
     /// Furthest word revealed by asking for a hint, in fog modes. -1 is none.
     @State private var revealedThrough = -1
+    /// Width of the window, measured from the content — see `meterWidth`.
+    @State private var windowWidth: CGFloat = 0
     @State private var showsReviewPanel = true
     @State private var inspectedWord: InspectedWord?
     /// Guards against turning twice off one burst of alignment updates.
@@ -51,6 +53,18 @@ struct ContentView: View {
                         .frame(width: 320)
                         .transition(.move(edge: .trailing))
                 }
+            }
+        }
+        .background {
+            // The window's width, so the meter can take what is left of it. A toolbar item
+            // cannot ask how much room it has — `maxWidth: .infinity` on the principal item
+            // makes it demand more than that slot holds, and the header either wraps or
+            // drops the item outright — so the width is measured here, where the geometry
+            // is real, and handed over as a number.
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { windowWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, new in windowWidth = new }
             }
         }
         .toolbar { toolbar }
@@ -152,7 +166,7 @@ struct ContentView: View {
         }
 
         ToolbarItem(placement: .principal) {
-            ListeningIndicator(model: model, label: stateLabel)
+            ListeningIndicator(model: model, label: stateLabel, width: meterWidth)
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -192,6 +206,17 @@ struct ContentView: View {
             }
             .help("Settings (⌘,)")
         }
+    }
+
+    /// How wide the level meter should be: the window, less everything beside it.
+    ///
+    /// The subtracted amount is the rest of the header — the buttons on the left, the mode
+    /// picker, pins, review and settings on the right, and the state label. **Raise it if
+    /// the header wraps or the meter vanishes**; the principal toolbar slot will not
+    /// stretch, and asking it for more room than it has drops the item rather than
+    /// shrinking it. Lower it to let the meter run further.
+    private var meterWidth: CGFloat {
+        max(160, windowWidth - 900)
     }
 
     private var stateLabel: String {
@@ -370,11 +395,13 @@ struct ContentView: View {
 private struct ListeningIndicator: View {
     let model: RecitationSessionModel
     let label: String
+    /// Set from the window's width by the view that owns it.
+    let width: CGFloat
 
     var body: some View {
         HStack(spacing: 10) {
             LevelMeter(level: model.level, isActive: model.isRunning, isClipping: model.isClipping)
-                .frame(width: 132, height: 18)
+                .frame(width: width, height: 18)
             Text(label)
                 .font(.callout.weight(model.isRunning ? .semibold : .regular))
                 .foregroundStyle(model.isRunning ? .primary : .secondary)
@@ -481,7 +508,16 @@ private struct SidebarView: View {
                 Divider()
             }
 
+            SurahSearchField(text: $library.searchText)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
             List(selection: $library.selectedSurah) {
+                Section("Open page") {
+                    PageSummary(library: library)
+                }
+
                 if !pins.pins.isEmpty {
                     Section("Pinned") {
                         ForEach(pins.pins) { pin in
@@ -502,10 +538,6 @@ private struct SidebarView: View {
                     }
                 } header: {
                     Text("Surah")
-                }
-
-                Section("Open page") {
-                    PageSummary(library: library)
                 }
 
                 Section("Pipeline") {
@@ -542,8 +574,53 @@ private struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
-            .searchable(text: $library.searchText, placement: .sidebar, prompt: "Surah name or number")
         }
+    }
+}
+
+/// The sidebar's search field, drawn rather than borrowed.
+///
+/// `.searchable(placement: .sidebar)` gives the system field, which cannot be restyled —
+/// it arrives with its own frame and sits where AppKit decides. This is the same
+/// behaviour in a shape that matches the rest of the sidebar, and it can sit above the
+/// list rather than floating over it.
+private struct SurahSearchField: View {
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+            TextField("Surah name or number", text: $text)
+                .textFieldStyle(.plain)
+                .focused($isFocused)
+                .onSubmit { isFocused = false }
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                    isFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(isFocused ? 0.75 : 0.45), in: Capsule())
+        .overlay {
+            // A ring only while focused: the field should say where the keyboard is going
+            // without drawing a box around itself the rest of the time.
+            Capsule()
+                .strokeBorder(Color.accentColor.opacity(isFocused ? 0.65 : 0), lineWidth: 1.5)
+        }
+        .animation(.easeOut(duration: 0.15), value: isFocused)
+        .animation(.easeOut(duration: 0.15), value: text.isEmpty)
+        .onTapGesture { isFocused = true }
     }
 }
 
