@@ -2358,6 +2358,8 @@ extension TajweedCalibration {
             // the other would charge the difference to the voice when it belongs to the
             // length of the passage.
             var perAyahTested = 0, perAyahPreferred = 0
+            var byRuleTested: [TajweedRule: Int] = [:]
+            var byRulePreferred: [TajweedRule: Int] = [:]
             do {
                 let scorer = HypothesisScorer()
                 var byVerse: [VerseReference: (start: Double, end: Double)] = [:]
@@ -2368,28 +2370,48 @@ extension TajweedCalibration {
                     byVerse[reference] = (min(existing?.start ?? a, a), max(existing?.end ?? b, b))
                 }
                 for (reference, span) in byVerse.sorted(by: { $0.key < $1.key }) {
+                    // Any āyah carrying any of the rules being asked about. Filtering on
+                    // the qalqalah echo alone, which this did, meant ikhfāʾ was only ever
+                    // measured where a qalqalah happened to sit in the same āyah: seven in
+                    // a recorded page became two.
                     guard let entry = script[reference],
-                          entry.symbols.contains(UInt8(AlignedTajweedAnalyzer.qalqalaEcho))
+                          entry.symbols.contains(where: {
+                              $0 == UInt8(AlignedTajweedAnalyzer.qalqalaEcho)
+                                  || $0 == UInt8(HypothesisScorer.ikhfaNun)
+                                  || $0 == UInt8(HypothesisScorer.iqlabNun)
+                          })
                     else { continue }
                     let from = Int(span.start * AudioChunk.canonicalSampleRate)
                     let to = Int(span.end * AudioChunk.canonicalSampleRate)
                     guard from >= 0, to <= audio.samples.count, to - from > 3200 else { continue }
                     let chunk = AudioChunk(samples: Array(audio.samples[from..<to]), startTime: 0)
-                    let result = await hypothesisRate(
-                        audio: chunk,
-                        symbols: entry.symbols.map(Int.init),
-                        model: model,
-                        scorer: scorer
-                    )
-                    perAyahTested += result.tested
-                    perAyahPreferred += result.preferMistake
+                    for rule in [TajweedRule.qalqalah, .ikhfa, .iqlab] {
+                        let result = await hypothesisRate(
+                            audio: chunk,
+                            symbols: entry.symbols.map(Int.init),
+                            rule: rule,
+                            model: model,
+                            scorer: scorer
+                        )
+                        byRuleTested[rule, default: 0] += result.tested
+                        byRulePreferred[rule, default: 0] += result.preferMistake
+                        if rule == .qalqalah {
+                            perAyahTested += result.tested
+                            perAyahPreferred += result.preferMistake
+                        }
+                    }
                 }
             }
-            if perAyahTested > 0 {
-                print("    per āyah, as the qārī is measured:")
-                print("      qalqalah tested             \(perAyahTested)")
-                print("      audio prefers the mistake   \(perAyahPreferred)/\(perAyahTested)"
-                      + "  (\(pct(Double(perAyahPreferred) / Double(perAyahTested))))")
+            if perAyahTested > 0 || !byRuleTested.isEmpty {
+                print("    per āyah, as the qārī is measured — audio prefers the mistake:")
+                for rule in [TajweedRule.qalqalah, .ikhfa, .iqlab] {
+                    let tested = byRuleTested[rule] ?? 0
+                    guard tested > 0 else { continue }
+                    let preferred = byRulePreferred[rule] ?? 0
+                    print("      \(rule.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0))"
+                          + "\(preferred)/\(tested)"
+                          + "  (\(pct(Double(preferred) / Double(tested))))")
+                }
             }
 
             // Which reading does the audio support? Aligned twice per qalqalah — once
