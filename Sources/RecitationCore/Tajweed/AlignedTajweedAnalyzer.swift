@@ -534,9 +534,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                     examined: &examined
                 )
             } else {
-                notes += await qalqalaSupportNotes(
+                notes += qalqalaSupportNotes(
                     segment: segment,
                     words: wordsByVerse,
+                    observed: observed,
                     supported: supported,
                     examined: &examined
                 )
@@ -1205,9 +1206,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
     private func qalqalaSupportNotes(
         segment: AlignedAudioSegment,
         words: [VerseReference: [TargetWord]],
+        observed: MuaalemTajweedAnalyzer.Observation,
         supported: Set<Int>,
         examined: inout Int
-    ) async -> [TajweedNote] {
+    ) -> [TajweedNote] {
         // Where each āyah of this segment begins and ends, from the words the matcher
         // placed in the audio.
         var spans: [VerseReference: (start: Double, end: Double)] = [:]
@@ -1233,21 +1235,18 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                   })
             else { continue }
 
-            let from = Int((span.start - segment.audio.startTime) * rate)
-            let to = Int((span.end - segment.audio.startTime) * rate)
-            guard from >= 0, to <= segment.audio.samples.count, to - from > 3200 else { continue }
-            let chunk = AudioChunk(samples: Array(segment.audio.samples[from..<to]), startTime: 0)
-
-            guard let observed = try? await model.probabilities(for: chunk),
-                  let phonemes = observed.probabilities["phonemes"]
-            else { continue }
+            // The segment *is* this āyah — `perVerse` cut it — and the caller has already
+            // run the model over it. Slicing and running it again doubled the inference in
+            // a session, which is the whole cost of analysis.
+            guard let phonemes = observed.probabilities["phonemes"] else { continue }
 
             let symbols = entry.symbols.map(Int.init)
             // Where each phoneme fell, so a flag can be attached to the word that was
             // actually being said at that moment.
-            let placed = (try? aligner.align(probabilities: phonemes, target: symbols)) ?? []
+            let reading = try? aligner.scored(probabilities: phonemes, target: symbols)
             let placedByIndex = Dictionary(
-                placed.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first }
+                (reading?.spans ?? []).map { ($0.index, $0) },
+                uniquingKeysWith: { first, _ in first }
             )
 
             for rule in options.judgedByHypothesis {
@@ -1256,7 +1255,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 : HypothesisScorer.positions(in: symbols, rule: rule)
             for position in places {
                 guard let comparison = scorer.compare(
-                    probabilities: phonemes, symbols: symbols, at: position, rule: rule
+                    probabilities: phonemes, symbols: symbols, at: position,
+                    rule: rule, correct: reading
                 ) else { continue }
 
                 // Which word was being recited when this sound happened.
@@ -1272,7 +1272,8 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 // already says when each word was recited. Where those overlap is the
                 // word, in whichever tokenisation either side prefers.
                 guard let where_ = placedByIndex[position] else { continue }
-                let at = span.start + Double(where_.frames.lowerBound) * observed.frameDuration
+                let at = segment.audio.startTime
+                    + Double(where_.frames.lowerBound) * observed.frameDuration
                 guard let spoken = segment.words.first(where: {
                     guard let range = $0.timeRange else { return false }
                     return range.contains(at)

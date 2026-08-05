@@ -213,10 +213,17 @@ public struct HypothesisScorer: Sendable {
         probabilities: [[Double]],
         symbols: [Int],
         at position: Int,
-        rule: TajweedRule
+        rule: TajweedRule,
+        correct known: CTCForcedAligner.Alignment? = nil
     ) -> Comparison? {
+        // The correct reading is the same for every question asked of an āyah, so it is
+        // aligned once and passed in. Re-deriving it per instance was most of the cost:
+        // an āyah with six rules in it paid for thirteen Viterbi passes over the whole
+        // sequence where seven do, and the caller had already computed one of those to
+        // find where the phonemes fell.
         guard let broken = Self.violate(symbols, at: position, rule: rule),
-              let correct = try? aligner.scored(probabilities: probabilities, target: symbols),
+              let correct = known
+                  ?? (try? aligner.scored(probabilities: probabilities, target: symbols)),
               let wrong = try? aligner.scored(probabilities: probabilities, target: broken)
         else { return nil }
 
