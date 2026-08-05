@@ -2239,6 +2239,38 @@ extension TajweedCalibration {
                     )
                 )
             }
+            // Re-map every logged word onto the target this build produces.
+            //
+            // A log stores a word's index into the target of the app that wrote it, and
+            // that numbering is not stable across versions: adding the basmala put four
+            // words in front of every surah, so every index in a session recorded before
+            // it now points four words late. Read literally, sessions from last week
+            // describe a recitation nobody gave.
+            //
+            // Matched by āyah and by position within it instead, which no change to what
+            // sits around a verse can disturb. Words the current target does not contain
+            // are dropped rather than guessed at.
+            var indexByLogIndex: [Int: Int] = [:]
+            var expectedByLogIndex: [Int: String] = [:]
+            do {
+                var targetByVerse: [VerseReference: [TargetWord]] = [:]
+                for word in target.flattenedWords {
+                    targetByVerse[word.reference, default: []].append(word)
+                }
+                var logByVerse: [VerseReference: [SessionRecorder.Log.Word]] = [:]
+                for word in log.words.sorted(by: { $0.index < $1.index }) {
+                    logByVerse[VerseReference(surah: word.surah, ayah: word.ayah), default: []]
+                        .append(word)
+                }
+                for (reference, logged) in logByVerse {
+                    guard let current = targetByVerse[reference] else { continue }
+                    for (position, word) in logged.enumerated() where position < current.count {
+                        indexByLogIndex[word.index] = current[position].globalIndex
+                        expectedByLogIndex[word.index] = current[position].text
+                    }
+                }
+            }
+
             // The segment boundaries the app actually used, so the replay meets the same
             // alignment problem the reciter did rather than an easier one.
             var segments: [AlignedAudioSegment] = []
@@ -2258,14 +2290,15 @@ extension TajweedCalibration {
                     AlignedAudioSegment(
                         audio: chunk,
                         transcription: .empty,
-                        words: words.map {
-                            WordEvaluation(
-                                targetIndex: $0.index,
-                                reference: VerseReference(surah: $0.surah, ayah: $0.ayah),
-                                expectedText: $0.text,
+                        words: words.compactMap { word in
+                            guard let index = indexByLogIndex[word.index] else { return nil }
+                            return WordEvaluation(
+                                targetIndex: index,
+                                reference: VerseReference(surah: word.surah, ayah: word.ayah),
+                                expectedText: expectedByLogIndex[word.index] ?? word.text,
                                 status: .correct,
-                                timeRange: ($0.start ?? 0)...($0.end ?? 0),
-                                recognizerConfidence: $0.confidence ?? 1
+                                timeRange: (word.start ?? 0)...(word.end ?? 0),
+                                recognizerConfidence: word.confidence ?? 1
                             )
                         }
                     )

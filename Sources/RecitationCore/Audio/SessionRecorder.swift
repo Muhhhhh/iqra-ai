@@ -25,9 +25,20 @@ public actor SessionRecorder {
     /// should not break because a field moved.
     public struct Log: Codable, Sendable {
         public struct Word: Codable, Sendable {
+            /// Index into the target of the app that wrote this log.
+            ///
+            /// Not stable across versions — adding the basmala put four words in front of
+            /// every surah and moved every index after them — so anything reading a log
+            /// back should locate a word by `surah`, `ayah` and `position` and treat this
+            /// as a within-log identifier only.
             public var index: Int
             public var surah: Int
             public var ayah: Int
+            /// Where the word falls within its āyah, counting from zero.
+            ///
+            /// Optional because logs written before this field existed do not carry it;
+            /// a reader can recover it from the order of a verse's words.
+            public var position: Int?
             public var text: String
             public var status: String
             public var start: TimeInterval?
@@ -188,6 +199,16 @@ public actor SessionRecorder {
             return nil
         }
 
+        // Where each word sits inside its āyah, which is what makes a log readable by a
+        // later version of the app.
+        var positions: [Int: Int] = [:]
+        var seen: [VerseReference: Int] = [:]
+        for word in words.sorted(by: { $0.targetIndex < $1.targetIndex }) {
+            let next = seen[word.reference] ?? 0
+            positions[word.targetIndex] = next
+            seen[word.reference] = next + 1
+        }
+
         let log = Log(
             recordedAt: startedAt,
             sampleRate: AudioChunk.canonicalSampleRate,
@@ -198,6 +219,7 @@ public actor SessionRecorder {
                     index: $0.targetIndex,
                     surah: $0.reference.surah,
                     ayah: $0.reference.ayah,
+                    position: positions[$0.targetIndex],
                     text: $0.expectedText,
                     status: String(describing: $0.status),
                     start: $0.timeRange?.lowerBound,
