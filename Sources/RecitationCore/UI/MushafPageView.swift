@@ -345,8 +345,24 @@ public struct MushafPageView: View {
         // Āyah ornaments stay: they are the page's structure rather than its text, and
         // hiding them makes it impossible to tell where you are.
         guard word.kind == .word, let index = word.targetIndex else { return true }
+        // A word that was skipped stays behind the fog.
+        //
+        // Revealing it made a passed-over word identical to a recited one — fog reports
+        // no verdicts, so it lost its colour too and simply appeared, as though it had
+        // been said. Someone reciting from memory would watch the page fill in and never
+        // learn they had jumped a line. It is left hidden instead, and marked, so the gap
+        // is something they can see.
+        // The hint can still uncover one, so a reciter who wants to go back and see what
+        // they missed is not locked out of it.
+        if status == .skipped { return index <= revealedThrough }
         if status != .notYetRecited { return true }
         return index <= revealedThrough
+    }
+
+    /// Whether a word is hidden *because it was passed over*, rather than not yet reached.
+    private func wasSkipped(_ word: MushafWord, status: WordStatus) -> Bool {
+        mode.hidesUnrecitedText && word.kind == .word && status == .skipped
+            && !isRevealed(word, status: status)
     }
 
     /// Lines that fall well short of the measure are left ragged instead of stretched.
@@ -404,6 +420,7 @@ public struct MushafPageView: View {
                 tajweedFinding: word.targetIndex.flatMap { tajweedFindings[$0] },
                 mode: mode,
                 isRevealed: isRevealed(word, status: status),
+                wasSkipped: wasSkipped(word, status: status),
                 isSelected: word.targetIndex != nil && selection == word.targetIndex
             ) {
                 if let index = word.targetIndex {
@@ -458,6 +475,8 @@ private struct MushafWordView: View {
     let mode: PracticeMode
     /// False while the word is still hidden by fog.
     let isRevealed: Bool
+    /// Hidden because the reciter went past it, not because they have yet to reach it.
+    let wasSkipped: Bool
     let isSelected: Bool
     let onTap: () -> Void
 
@@ -510,6 +529,21 @@ private struct MushafWordView: View {
             // as it fills in, and the muṣḥaf's line breaks stay where they belong.
             .opacity(isRevealed ? 1 : 0)
             .animation(.easeOut(duration: 0.28), value: isRevealed)
+            // A word passed over keeps its place behind the fog and says so. Drawn as an
+            // outline of where the word sits rather than the word itself: the point is
+            // that something was missed, not what it was — showing the text would hand
+            // over the very thing fog exists to withhold.
+            .overlay {
+                if wasSkipped {
+                    RoundedRectangle(cornerRadius: fontSize * 0.12)
+                        .strokeBorder(
+                            WordStatusStyle.foreground(for: .skipped).opacity(0.55),
+                            style: StrokeStyle(lineWidth: 1.2, dash: [3, 3])
+                        )
+                        .padding(.horizontal, -fontSize * 0.06)
+                        .padding(.vertical, fontSize * 0.06)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if isRevealed, mode.reportsMistakes, let colour = WordStatusStyle.underline(for: status) {
                     Capsule()
@@ -552,7 +586,9 @@ private struct MushafWordView: View {
             .onTapGesture(perform: onTap)
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(
-                "\(word.text). \(word.translation). \(WordStatusStyle.label(for: status))"
+                wasSkipped
+                    ? "Skipped. \(word.translation)"
+                    : "\(word.text). \(word.translation). \(WordStatusStyle.label(for: status))"
             )
             .animation(.easeOut(duration: 0.22), value: status)
     }
