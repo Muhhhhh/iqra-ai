@@ -53,9 +53,15 @@ public struct HypothesisScorer: Sendable {
 
     private let aligner: CTCForcedAligner
     private let blank = 0
+    /// How many symbols either side of the disputed one the comparison covers.
+    ///
+    /// Not a free parameter for long: 0 compares only the sound itself, 1 takes its
+    /// neighbours for air. Swept below.
+    public let context: Int
 
-    public init(aligner: CTCForcedAligner = CTCForcedAligner(blank: 0)) {
+    public init(aligner: CTCForcedAligner = CTCForcedAligner(blank: 0), context: Int = 1) {
         self.aligner = aligner
+        self.context = context
     }
 
     /// Every place in a sequence where a rule can be violated, one position each.
@@ -184,12 +190,13 @@ public struct HypothesisScorer: Sendable {
         else { return nil }
 
         // The window: from the symbol before the disputed one to the symbol after it.
-        let before = correct.spans.last { $0.index < position }
-        let here = correct.spans.first { $0.index == position }
-        let after = correct.spans.first { $0.index > position }
-        guard let here else { return nil }
-        let lower = before?.frames.lowerBound ?? here.frames.lowerBound
-        let upper = after?.frames.upperBound ?? here.frames.upperBound
+        guard let here = correct.spans.first(where: { $0.index == position }) else { return nil }
+        let before = correct.spans.last { $0.index <= position - context }
+        let after = correct.spans.first { $0.index >= position + context }
+        let lower = context == 0 ? here.frames.lowerBound
+            : (before?.frames.lowerBound ?? here.frames.lowerBound)
+        let upper = context == 0 ? here.frames.upperBound
+            : (after?.frames.upperBound ?? here.frames.upperBound)
         guard upper > lower else { return nil }
         let window = lower..<upper
 

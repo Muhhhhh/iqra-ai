@@ -2146,7 +2146,7 @@ extension TajweedCalibration {
         }
         let script = try PhonemeScript(contentsOf: scriptURL)
         let library = ReciterAudioLibrary()
-        let scorer = HypothesisScorer()
+        let scorer = HypothesisScorer(context: arguments.frameContext > 0 ? arguments.frameContext : 1)
 
         print("Which reading does the audio support?")
         print("  reciter  \(reciter.name)")
@@ -2372,7 +2372,7 @@ extension TajweedCalibration {
             var byRuleTested: [TajweedRule: Int] = [:]
             var byRulePreferred: [TajweedRule: Int] = [:]
             do {
-                let scorer = HypothesisScorer()
+                let scorer = HypothesisScorer(context: arguments.frameContext > 0 ? arguments.frameContext : 1)
                 var byVerse: [VerseReference: (start: Double, end: Double)] = [:]
                 for word in log.words {
                     guard let a = word.start, let b = word.end else { continue }
