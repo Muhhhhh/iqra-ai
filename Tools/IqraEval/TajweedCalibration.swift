@@ -2088,6 +2088,41 @@ extension TajweedCalibration {
         return positions
     }
 
+    /// The model's posteriors at twice its own frame rate.
+    ///
+    /// The front-end computes mel frames every 10 ms and stacks pairs, so the model reads
+    /// 20 ms a step and emits one posterior per 40 ms — it discards three quarters of the
+    /// resolution the audio was given. That is what makes a 20-to-60 ms qalqalah bounce
+    /// roughly one frame, and why timing one failed outright.
+    ///
+    /// Running the same audio again shifted by half a frame and interleaving the two gives
+    /// a posterior every 20 ms without retraining anything. The frames overlap, so these
+    /// are not the independent observations CTC assumes and an absolute likelihood from
+    /// them means less than it did. A *ratio* between two hypotheses over the same frames
+    /// is unharmed, which is the only thing asked of them here.
+    static func interleaved(
+        _ audio: AudioChunk,
+        model: MuaalemTajweedAnalyzer
+    ) async -> [[Double]]? {
+        let shift = Int(AudioChunk.canonicalSampleRate * 0.02)
+        guard audio.samples.count > shift,
+              let first = try? await model.probabilities(for: audio),
+              let a = first.probabilities["phonemes"]
+        else { return nil }
+        let offset = AudioChunk(samples: Array(audio.samples[shift...]), startTime: 0)
+        guard let second = try? await model.probabilities(for: offset),
+              let b = second.probabilities["phonemes"]
+        else { return a }
+
+        var rows: [[Double]] = []
+        rows.reserveCapacity(a.count + b.count)
+        for index in 0..<max(a.count, b.count) {
+            if index < a.count { rows.append(a[index]) }
+            if index < b.count { rows.append(b[index]) }
+        }
+        return rows
+    }
+
     static func hypothesisRate(
         audio: AudioChunk,
         symbols: [Int],
@@ -2095,8 +2130,10 @@ extension TajweedCalibration {
         model: MuaalemTajweedAnalyzer,
         scorer: HypothesisScorer
     ) async -> (tested: Int, preferMistake: Int, median: Double) {
+        let fine = ProcessInfo.processInfo.environment["IQRA_FINE"] != nil
         guard let observed = try? await model.probabilities(for: audio),
-              let phonemes = observed.probabilities["phonemes"]
+              let coarse = observed.probabilities["phonemes"],
+              let phonemes = fine ? await interleaved(audio, model: model) : coarse
         else { return (0, 0, 0) }
         var supports: [Double] = []
         for position in testablePositions(symbols, rule: rule) {
