@@ -604,7 +604,15 @@ private struct TajweedRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let measurement = note.measurement {
-                    Text("heard \(measurement.observed, format: .number.precision(.fractionLength(2)))\(measurement.unit), your pace suggests \(measurement.expected, format: .number.precision(.fractionLength(2)))\(measurement.unit)")
+                    // "Your pace suggests" is true of a duration and of nothing else.
+                    // Qalqalah is not timed — it is decided by which reading of the āyah
+                    // the audio fits better — and its two numbers are likelihoods. Shown
+                    // in that sentence they read as a shortfall in seconds, and a reciter
+                    // reported exactly that: an offset of −0.10 against an expected
+                    // duration the app had never measured.
+                    Text(measurement.unit == "s"
+                         ? "heard \(measurement.observed, format: .number.precision(.fractionLength(2)))s, your pace suggests \(measurement.expected, format: .number.precision(.fractionLength(2)))s"
+                         : "the audio fits the reading without it a little better — by \(measurement.expected - measurement.observed, format: .number.precision(.fractionLength(3))) per frame")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.tertiary)
                 }

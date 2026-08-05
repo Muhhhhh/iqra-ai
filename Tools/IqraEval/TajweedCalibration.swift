@@ -2104,11 +2104,22 @@ extension TajweedCalibration {
                 probabilities: phonemes, symbols: symbols, at: position, rule: rule
             ) {
                 supports.append(comparison.support)
-                // One line per instance, with the stop that produced the bounce, so a
-                // threshold can be swept and the five letters compared without re-running
-                // the model. Grep-shaped on purpose.
+                // One line per instance: the support, the stop that produced the bounce,
+                // and how long the sound actually ran. The duration is here because a
+                // reciter reported flags on qalqalahs they had held *longer* than usual —
+                // the comparison says the audio departs from the text, never which way,
+                // and telling someone they swallowed a bounce they overdid is worse than
+                // saying nothing.
                 let letter = position > 0 ? symbols[position - 1] : 0
-                print("SUPPORT \(comparison.support) \(letter)")
+                var held = 0.0
+                if let spans = try? CTCForcedAligner(blank: 0)
+                    .align(probabilities: phonemes, target: symbols),
+                   let echo = spans.first(where: { $0.index == position }) {
+                    let next = spans.first { $0.index > position }
+                    let to = next?.frames.lowerBound ?? echo.frames.upperBound
+                    held = Double(max(0, to - echo.frames.lowerBound)) * observed.frameDuration
+                }
+                print("SUPPORT \(comparison.support) \(letter) \(held)")
             }
         }
         guard !supports.isEmpty else { return (0, 0, 0) }

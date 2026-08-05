@@ -52,6 +52,7 @@ public struct HypothesisScorer: Sendable {
     public static let plainNun = 25
 
     private let aligner: CTCForcedAligner
+    private let blank = 0
 
     public init(aligner: CTCForcedAligner = CTCForcedAligner(blank: 0)) {
         self.aligner = aligner
@@ -111,7 +112,42 @@ public struct HypothesisScorer: Sendable {
         }
     }
 
+    /// How well an alignment explains one stretch of frames, per frame.
+    ///
+    /// The whole-sequence score cannot be used to judge one phoneme. It is the path
+    /// likelihood over the entire āyah, so anything that makes the āyah align worse drags
+    /// every comparison inside it down together — measured on a recording where the
+    /// reciter was deliberately mispronouncing *nūns*, every qalqalah in the same verses
+    /// shifted by −0.042 and started being flagged, though the bounces were untouched.
+    ///
+    /// Restricted to the frames around the symbol in question, the comparison answers
+    /// about that sound and nothing else.
+    private func score(
+        _ alignment: CTCForcedAligner.Alignment,
+        probabilities: [[Double]],
+        over frames: Range<Int>
+    ) -> Double {
+        var symbolAt = [Int](repeating: blank, count: probabilities.count)
+        for span in alignment.spans {
+            for frame in span.frames where frame < symbolAt.count { symbolAt[frame] = span.symbol }
+        }
+        var total = 0.0
+        var counted = 0
+        for frame in frames where frame >= 0 && frame < probabilities.count {
+            let symbol = symbolAt[frame]
+            guard symbol < probabilities[frame].count else { continue }
+            let value = probabilities[frame][symbol]
+            total += value > 0 ? log(value) : -30
+            counted += 1
+        }
+        return counted > 0 ? total / Double(counted) : 0
+    }
+
     /// Score the text's reading against a violated one, over the same audio.
+    ///
+    /// Both are aligned over the whole āyah — the path has to be found in context — but
+    /// only the frames around the disputed sound are compared, with a little air either
+    /// side so a boundary is not cut through.
     public func compare(
         probabilities: [[Double]],
         symbols: [Int],
@@ -122,11 +158,22 @@ public struct HypothesisScorer: Sendable {
               let correct = try? aligner.scored(probabilities: probabilities, target: symbols),
               let wrong = try? aligner.scored(probabilities: probabilities, target: broken)
         else { return nil }
+
+        // The window: from the symbol before the disputed one to the symbol after it.
+        let before = correct.spans.last { $0.index < position }
+        let here = correct.spans.first { $0.index == position }
+        let after = correct.spans.first { $0.index > position }
+        guard let here else { return nil }
+        let lower = before?.frames.lowerBound ?? here.frames.lowerBound
+        let upper = after?.frames.upperBound ?? here.frames.upperBound
+        guard upper > lower else { return nil }
+        let window = lower..<upper
+
         return Comparison(
             position: position,
             rule: rule,
-            expected: correct.score,
-            violated: wrong.score
+            expected: score(correct, probabilities: probabilities, over: window),
+            violated: score(wrong, probabilities: probabilities, over: window)
         )
     }
 }
