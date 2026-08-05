@@ -2105,6 +2105,30 @@ extension TajweedCalibration {
     /// are not the independent observations CTC assumes and an absolute likelihood from
     /// them means less than it did. A *ratio* between two hypotheses over the same frames
     /// is unharmed, which is the only thing asked of them here.
+    /// Twice the frame rate, by running the model twice half a frame apart.
+    ///
+    /// The model advances 40 ms whatever it is looking at, which is why a qalqalah bounce
+    /// of 20 to 60 ms could not be timed: the thing being measured is the size of the
+    /// ruler. Running the same audio again offset by 20 ms and interleaving the two sets
+    /// of frames gives a 20 ms grid without touching the audio — which is the point.
+    /// Stretching the recording would also have bought resolution, and would have fed the
+    /// encoder speech at a pace it was never trained on, leaving no way to tell a
+    /// resolution gain from a distribution loss.
+    ///
+    /// Measured on the reciter's own paired recording and on Al-Husary, set `IQRA_FINE`:
+    ///
+    ///     qalqalah, Al-Husary          0/12   →  0/12
+    ///     qalqalah, recited properly   2/10   →  1/10
+    ///     qalqalah, bounces swallowed  6/13   →  6/13
+    ///     ikhfāʾ, both passes          0/7, 7/7 unchanged
+    ///
+    /// One false flag fewer on ten instances, detection unmoved, for twice the inference.
+    /// The right direction and the right mechanism, and not evidence: n is ten, and the
+    /// qārī floor is already zero so studio recitation cannot answer this at all. It needs
+    /// more recorded material from someone who makes real mistakes, not more compute.
+    ///
+    /// Behind an environment variable and not wired into the app, so the measurement can
+    /// be repeated when there is more to test it against.
     static func interleaved(
         _ audio: AudioChunk,
         model: MuaalemTajweedAnalyzer
@@ -2136,6 +2160,7 @@ extension TajweedCalibration {
         model: MuaalemTajweedAnalyzer,
         scorer: HypothesisScorer
     ) async -> (tested: Int, preferMistake: Int, median: Double) {
+        // IQRA_FINE=1 doubles the frame rate — see `interleaved`, and its measurement.
         let fine = ProcessInfo.processInfo.environment["IQRA_FINE"] != nil
         guard let observed = try? await model.probabilities(for: audio),
               let coarse = observed.probabilities["phonemes"],
