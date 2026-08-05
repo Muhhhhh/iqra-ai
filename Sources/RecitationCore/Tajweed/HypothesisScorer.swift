@@ -58,6 +58,30 @@ public struct HypothesisScorer: Sendable {
         self.aligner = aligner
     }
 
+    /// Every place in a sequence where a rule can be violated, one position each.
+    ///
+    /// One per run, not per symbol: ikhfāʾ and iqlāb are written two or three times over
+    /// for the length of their ghunnah, and each run is one place the reciter either
+    /// applied the rule or did not.
+    public static func positions(in symbols: [Int], rule: TajweedRule) -> [Int] {
+        let wanted: Int
+        switch rule {
+        case .qalqalah: wanted = AlignedTajweedAnalyzer.qalqalaEcho
+        case .ikhfa: wanted = ikhfaNun
+        case .iqlab: wanted = iqlabNun
+        default: return []
+        }
+        var found: [Int] = []
+        var index = 0
+        while index < symbols.count {
+            var end = index + 1
+            while end < symbols.count, symbols[end] == symbols[index] { end += 1 }
+            if symbols[index] == wanted { found.append(index) }
+            index = end
+        }
+        return found
+    }
+
     /// The sequence with one rule violated, or nil where the violation cannot be written.
     ///
     /// A rule is only testable this way when breaking it changes which symbols are

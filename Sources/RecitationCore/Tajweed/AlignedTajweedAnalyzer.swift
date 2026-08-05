@@ -136,6 +136,27 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         /// Kept behind a flag so that measurement can be repeated, not because the check is
         /// worth having.
         public var judgesQalqalaByDuration: Bool
+        /// Which rules are decided by asking which reading the audio supports.
+        ///
+        /// All three work the same way and rest on the same property: the phonetiser gives
+        /// each its own symbol, so breaking the rule changes which sounds are made and a
+        /// second sequence exists to compare against. Measured against reference
+        /// recitation, 58 āyāt each:
+        ///
+        ///     ikhfāʾ    3/88 across four qurrāʾ
+        ///     qalqalah  0/24 across two
+        ///
+        /// and against a reciter breaking each rule on purpose, ikhfāʾ caught 7 of 7 with
+        /// none flagged on the clean pass of the same passage.
+        ///
+        /// **Iqlāb is implemented and left out.** It rides the same mechanism and looked
+        /// clean on reference recitation — 1 in 23 — but it is sparse everywhere, about one
+        /// āyah in three, so no passage gives it a real floor. Switched on against a page
+        /// recited properly it flagged both instances it found. Two is not a measurement,
+        /// which is exactly why it cannot be shipped on: a rule that has never been shown
+        /// to stay quiet has no business accusing anyone. Add `.iqlab` here to measure it
+        /// again on a passage that holds enough of them to mean something.
+        public var judgedByHypothesis: [TajweedRule]
         /// How far below the reciter's own releases of that same letter a qalqalah must
         /// fall before it is questioned.
         ///
@@ -217,6 +238,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             judgesGhunnahHold: Bool = false,
             qalqalaShortfall: Double = 0.7,
             judgesQalqalaByDuration: Bool = false,
+            judgedByHypothesis: [TajweedRule] = [.qalqalah, .ikhfa],
             implausibleRatio: ClosedRange<Double> = 0.35...3.5,
             chunkSeconds: Double = .infinity,
             wordSupport: Double = 0.5,
@@ -231,6 +253,7 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             self.judgesGhunnahHold = judgesGhunnahHold
             self.qalqalaShortfall = qalqalaShortfall
             self.judgesQalqalaByDuration = judgesQalqalaByDuration
+            self.judgedByHypothesis = judgedByHypothesis
             self.implausibleRatio = implausibleRatio
             self.chunkSeconds = chunkSeconds
             self.wordSupport = wordSupport
@@ -1203,8 +1226,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
         var notes: [TajweedNote] = []
         for (reference, span) in spans.sorted(by: { $0.key < $1.key }) {
             guard let entry = script[reference],
-                  entry.symbols.contains(UInt8(Self.qalqalaEcho)),
-                  let verseWords = words[reference]
+                  let verseWords = words[reference],
+                  options.judgedByHypothesis.contains(where: {
+                      !HypothesisScorer.positions(in: entry.symbols.map(Int.init), rule: $0).isEmpty
+                  })
             else { continue }
 
             let from = Int((span.start - segment.audio.startTime) * rate)
@@ -1217,9 +1242,10 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
             else { continue }
 
             let symbols = entry.symbols.map(Int.init)
-            for position in symbols.indices where symbols[position] == Self.qalqalaEcho {
+            for rule in options.judgedByHypothesis {
+            for position in HypothesisScorer.positions(in: symbols, rule: rule) {
                 guard let comparison = scorer.compare(
-                    probabilities: phonemes, symbols: symbols, at: position, rule: .qalqalah
+                    probabilities: phonemes, symbols: symbols, at: position, rule: rule
                 ) else { continue }
 
                 // Whose word this is, and whether the audio bore the word out at all.
@@ -1247,12 +1273,12 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                 let start = segment.audio.startTime + Double(from) / rate
                 notes.append(
                     TajweedNote(
-                        rule: .qalqalah,
+                        rule: rule,
                         targetIndex: word.globalIndex,
                         reference: reference,
                         timeRange: start...(start + Double(to - from) / rate),
                         confidence: .low,
-                        message: "This qalqalah sounds swallowed — the letter should bounce before the next sound.",
+                        message: Self.hypothesisMessage(for: rule),
                         measurement: .init(
                             observed: comparison.expected,
                             expected: comparison.violated,
@@ -1261,8 +1287,25 @@ public actor AlignedTajweedAnalyzer: TajweedAnalyzer {
                     )
                 )
             }
+            }
         }
         return notes
+    }
+
+    /// What to say when the audio fits the broken reading better.
+    ///
+    /// Phrased as the mistake the rule actually describes rather than as a rule name. A
+    /// reciter who has just said a plain nūn is helped by "this should be hidden into the
+    /// letter after it" and not at all by the word ikhfāʾ.
+    private static func hypothesisMessage(for rule: TajweedRule) -> String {
+        switch rule {
+        case .ikhfa:
+            return "This nūn sounds clear — it should be hidden into the letter that follows."
+        case .iqlab:
+            return "This nūn should sound like a mīm here, before the bāʾ."
+        default:
+            return "This qalqalah sounds swallowed — the letter should bounce before the next sound."
+        }
     }
 
     /// Read one ṣifah head over one phoneme's frames.

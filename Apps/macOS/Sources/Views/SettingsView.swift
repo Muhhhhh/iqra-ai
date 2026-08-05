@@ -330,7 +330,7 @@ private struct TajweedSettings: View {
 
             Section {
                 Toggle("Check my recitation against the text", isOn: $settings.analysesTajweedAudio)
-                Text("Two rules are judged, and only two. Madd is timed against the pace of your own elongations. Qalqalah is judged by whether the bounce is there at all — the āyah is matched against your audio twice, once as written and once with the bounce removed, and whichever fits better is taken as what you said.")
+                Text("Three rules are judged. Madd is timed against the pace of your own elongations. Qalqalah and ikhfāʾ are decided by whether the sound is there at all — the āyah is matched against your audio twice, once as written and once with the rule broken, and whichever fits better is taken as what you said.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -354,7 +354,7 @@ private struct TajweedSettings: View {
             } header: {
                 Text("From your recitation")
             } footer: {
-                Text("Measured against recitation with mistakes put in on purpose: qalqalah drew nothing on a page recited properly and six flags on the same page with every bounce swallowed. Madd catches about one shortened elongation in three, at roughly one wrong flag per fifty āyāt. Neither has been reviewed by a qārī — treat what they say as a prompt to listen again, never as a correction.")
+                Text("Measured against recitation with mistakes put in on purpose. Ikhfāʾ caught every one of seven nūns said plainly and flagged none of the seven on the same passage recited properly. Qalqalah drew nothing on a page recited properly and six flags with every bounce swallowed. Madd catches about one shortened elongation in three. None of this has been reviewed by a qārī — treat what they say as a prompt to listen again, never as a correction.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
