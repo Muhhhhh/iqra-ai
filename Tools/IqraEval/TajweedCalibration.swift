@@ -2439,6 +2439,38 @@ extension TajweedCalibration {
             let shippingAnalyzer = AlignedTajweedAnalyzer(model: model, script: script)
             let shipped = await shippingAnalyzer.analyze(segments: segments, target: target)
             let coverage = await shippingAnalyzer.coverage()
+
+            // Every flagged moment as its own short clip, for someone to listen to.
+            //
+            // The one thing no measurement here can supply is whether a flag was right.
+            // Studio recitation cannot answer it — the qurrāʾ are not making the mistake —
+            // and the reciter cannot reliably judge their own. But it is a small question:
+            // eight sounds in a minute of audio, each a second long with a little either
+            // side for context. Someone who knows can answer all of them in two minutes,
+            // and that answer decides whether qalqalah's false-flag rate is a fifth or
+            // nothing.
+            if let clips = arguments.clipsPath {
+                let folder = URL(fileURLWithPath: clips)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let rate = AudioChunk.canonicalSampleRate
+                for (number, note) in shipped.enumerated() {
+                    let from = Int(max(0, note.timeRange.lowerBound - 0.4) * rate)
+                    let to = Int(min(audio.duration, note.timeRange.upperBound + 0.4) * rate)
+                    guard to > from, to <= audio.samples.count else { continue }
+                    let word = target.flattenedWords.first { $0.globalIndex == note.targetIndex }
+                    let name = "\(number + 1)-\(note.rule.rawValue)"
+                        + "-\(note.reference.surah)_\(note.reference.ayah)"
+                        + "-\(word?.text ?? "").wav"
+                    let piece = Array(audio.samples[from..<to])
+                    var data = SessionRecorder.header(sampleCount: piece.count)
+                    data.append(contentsOf: piece.flatMap {
+                        withUnsafeBytes(of: Int16(max(-1, min(1, $0)) * 32767).littleEndian, Array.init)
+                    })
+                    try? data.write(to: folder.appending(path: name))
+                }
+                print("    clips written              \(shipped.count) → \(folder.lastPathComponent)")
+            }
+
             let lengths = log.segments.map { $0.end - $0.start }
 
             func ratios(_ notes: [TajweedNote]) -> [Double] {

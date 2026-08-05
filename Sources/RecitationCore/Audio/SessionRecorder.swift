@@ -270,7 +270,7 @@ public actor SessionRecorder {
     }()
 
     /// A 44-byte canonical WAV header: mono, 16-bit, at the pipeline's rate.
-    static func header(sampleCount: Int) -> Data {
+    public static func header(sampleCount: Int) -> Data {
         let rate = UInt32(AudioChunk.canonicalSampleRate)
         let bytes = UInt32(sampleCount * 2)
         var data = Data()

@@ -988,6 +988,8 @@ struct Arguments {
     var maddShortfall: Double?
     var ghunnahHold = false
     var invertGhunnah = false
+    /// Where to write one WAV per flagged moment, for someone to listen to.
+    var clipsPath: String?
     /// Remove the whole word rather than just the spike.
     var tajweedRemoveWholeWord = false
     /// Expected phoneme sequence to force-align, words separated by spaces.
@@ -1073,6 +1075,7 @@ struct Arguments {
             case "--madd-shortfall": maddShortfall = next().flatMap { Double($0) }
             case "--ghunnah-hold": ghunnahHold = true
             case "--invert-ghunnah": ghunnahHold = true; invertGhunnah = true
+            case "--clips": clipsPath = next()
             case "--remove-whole-word": tajweedRemoveWholeWord = true
             case "--aligned-tajweed": alignedTajweed = true
             case "--goodness": goodnessTest = true
