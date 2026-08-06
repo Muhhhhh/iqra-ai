@@ -130,6 +130,29 @@ struct ReviewPanel: View {
                         }
                     }
 
+                    // What keeps coming back, which is worth more than any one session.
+                    //
+                    // The same page recited three times drew twelve flags between the
+                    // readings and only one sound was flagged twice. Either the reciter
+                    // varied, which people do, or a lone verdict is mostly noise — and
+                    // under both readings a sound questioned across separate sittings is
+                    // the one to practise. Shown above the session's own notes for that
+                    // reason.
+                    let recurring = model.history.recurring()
+                    if !recurring.isEmpty {
+                        Section {
+                            ForEach(recurring.prefix(6)) { entry in
+                                RecurringRow(entry: entry)
+                            }
+                        } header: {
+                            Text("Comes back")
+                        } footer: {
+                            Text("Questioned on more than one reading. A single flag is weak evidence — the same sound flagged again is not.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
                     // Always present, even with nothing to say. Silence from a checker
                     // that is switched off looks exactly like silence from one that
                     // found nothing wrong — and for a long time it was in fact silence
@@ -526,6 +549,34 @@ private struct TajweedStatusRow: View {
 }
 
 /// One rule the passage contains, and how many times.
+/// One sound that has been questioned on more than one reading.
+private struct RecurringRow: View {
+    let entry: TajweedHistory.Entry
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(TajweedStyle.colour(for: entry.rule))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.text)
+                    .font(.system(size: 15))
+                    .environment(\.layoutDirection, .rightToLeft)
+                Text("\(entry.rule.title) · \(entry.surah):\(entry.ayah)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            // The count, not a percentage: "3 of 4" is a fact about readings, where a
+            // rate invites reading it as a confidence, which it is not.
+            Text("\(entry.flagged) of \(max(entry.readings, entry.flagged))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 private struct RulePresenceRow: View {
     let rule: TajweedRule
     let count: Int

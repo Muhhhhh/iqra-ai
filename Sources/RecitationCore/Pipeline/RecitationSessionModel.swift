@@ -14,6 +14,8 @@ public final class RecitationSessionModel {
     public private(set) var words: [WordEvaluation] = []
     public private(set) var insertions: [InsertedWord] = []
     public private(set) var tajweedNotes: [TajweedNote] = []
+    /// What has been questioned before, across every session on this machine.
+    public private(set) var history = TajweedHistory.load()
     /// How much of the passage's tajweed was actually examined — see `TajweedCoverage`.
     public private(set) var tajweedCoverage: TajweedCoverage = .none
     public private(set) var transcript: String = ""
@@ -234,6 +236,11 @@ public final class RecitationSessionModel {
             segments = result.segments
             tajweedNotes = result.tajweedNotes
             tajweedCoverage = result.tajweedCoverage
+            // A session is only evidence alongside the others. See `TajweedHistory`: one
+            // flag says little, the same sound flagged across separate readings says
+            // something whichever way the cause runs.
+            history.record(words: result.alignment.words, notes: result.tajweedNotes)
+            history.save()
 
         case .failed(let failure):
             errorMessage = "\(failure.stage.rawValue): \(failure.message)"
