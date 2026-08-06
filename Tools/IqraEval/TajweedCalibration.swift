@@ -2313,6 +2313,14 @@ extension TajweedCalibration {
         let logs = contents.filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }
         guard !logs.isEmpty else { throw IqraEval.EvalError.missing("no session logs in \(folder)") }
 
+        // What the app would have remembered across these sessions.
+        //
+        // The recurrence view was built from a measurement — three readings of one page,
+        // twelve flags, one sound flagged twice — and tested on invented data. This runs
+        // the real recordings through the same store, which is the only way to see whether
+        // it surfaces anything a reciter would recognise.
+        var history = TajweedHistory()
+
         print("Replaying recorded sessions")
         print("  folder   \(directory.lastPathComponent)")
         print("  sessions \(logs.count)")
@@ -2484,6 +2492,21 @@ extension TajweedCalibration {
             print("    \(format(log.duration, 1))s, \(segments.count) segments, "
                   + "longest \(format(lengths.max() ?? 0, 1))s")
             print("    logged at the time              \(log.notes.count) notes")
+            history.record(
+                words: log.words.compactMap { word in
+                    guard let index = indexByLogIndex[word.index] else { return nil }
+                    return WordEvaluation(
+                        targetIndex: index,
+                        reference: VerseReference(surah: word.surah, ayah: word.ayah),
+                        expectedText: expectedByLogIndex[word.index] ?? word.text,
+                        status: word.start == nil ? .notYetRecited : .correct,
+                        timeRange: (word.start ?? 0)...(word.end ?? 0),
+                        recognizerConfidence: word.confidence ?? 1
+                    )
+                },
+                notes: shipped
+            )
+
             var byRule: [String: Int] = [:]
             for note in shipped { byRule[note.rule.rawValue, default: 0] += 1 }
             print("    rules present / examined        \(coverage.required) / \(coverage.examined)")
@@ -2623,6 +2646,17 @@ extension TajweedCalibration {
             print("      impossible measurements       \(wild(whole)) → \(wild(pieces))")
             print("      notes                         \(whole.count) → \(pieces.count)")
         }
+        let recurring = history.recurring()
+        if !recurring.isEmpty {
+            print("\n  Comes back across these readings:")
+            for entry in recurring {
+                print("    \(entry.text)  \(entry.rule.rawValue) \(entry.surah):\(entry.ayah)"
+                      + "  — \(entry.flagged) of \(max(entry.readings, entry.flagged))")
+            }
+        } else {
+            print("\n  Nothing was questioned on more than one reading.")
+        }
+
         print("")
         print("  A ratio far from 1 is the measurement failing, not the reciter — nobody")
         print("  holds a vowel twenty times its length. Counting those needs no qārī.")
