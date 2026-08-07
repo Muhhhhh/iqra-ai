@@ -48,6 +48,11 @@ nice -n 20 .build/release/IqraEval --calibrate-tajweed --aligned-tajweed --recit
 complaining more, so a catch count means nothing without the false flags beside it. In this
 app a false accusation is the worse error, so the false-flag line has a veto.
 
+**Run it on more than one reciter.** Madd's false flags run 1, 1, 4, 5 and 13 per 58 āyāt
+across five qurrāʾ, and its catch rate 28%, 9%, 9%, 5%, 12% — the 28% belongs to Al-Husary,
+who happens to be the default. A single-reciter figure for a duration check describes the
+reciter.
+
 **Treat every catch rate here as an upper bound.** The mistakes are synthetic — audio this
 repository compressed or excised itself — and that has misled badly before: qalqalah judged
 by duration scored 12 of 39 against excisions and **zero** against a page recited with every

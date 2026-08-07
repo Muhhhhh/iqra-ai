@@ -354,7 +354,7 @@ private struct TajweedSettings: View {
             } header: {
                 Text("From your recitation")
             } footer: {
-                Text("Measured against recitation with mistakes put in on purpose. Ikhfāʾ caught every one of seven nūns said plainly and flagged none of the seven on the same passage recited properly. Qalqalah drew nothing on a page recited properly and six flags with every bounce swallowed. Madd catches about one shortened elongation in three. None of this has been reviewed by a qārī — treat what they say as a prompt to listen again, never as a correction.")
+                Text("Measured against recitation with mistakes put in on purpose. Ikhfāʾ caught every one of seven nūns said plainly and flagged none of the seven on the same passage recited properly. Qalqalah drew nothing on a page recited properly and six flags with every bounce swallowed. Madd catches about one shortened elongation in eight, and varies more by voice than any other check here — on one qārī it catches a third for a single wrong flag, on another an eighth for thirteen. None of this has been reviewed by a qārī — treat what they say as a prompt to listen again, never as a correction.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)

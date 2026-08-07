@@ -29,9 +29,16 @@ import Foundation
 /// Measured over 58 āyāt each of Al-Husary, Al-Minshawi and Al-Afasy, against elongations
 /// halved and qalqalah releases excised:
 ///
-///     rule        caught          false flags in 174 āyāt
-///     qalqalah    12/39  (31%)     0
-///     madd        18/141 (13%)    10
+///     rule        caught          false flags
+///     qalqalah    12/39  (31%)     0 in 174 āyāt, three reciters
+///     madd        27/215 (13%)    24 in 290 āyāt, five reciters
+///
+/// Madd's figure is an average over voices that disagree violently, and the spread is the
+/// more important number. Across five qurrāʾ its false flags run 1, 1, 4, 5 and 13 per 58
+/// āyāt, and its catch rate 28%, 9%, 9%, 5%, 12%. Al-Husary alone gives 12 of 43 for one
+/// wrong flag; Al-Shuraym gives 5 for thirteen. Any single-reciter figure for this check —
+/// and every one quoted before this was Al-Husary's — describes that reciter and not the
+/// check.
 ///
 /// Modest detectors rather than good ones. They are also the only two tajweed checks in
 /// this app that have ever survived measurement, and both survived by asking how long
